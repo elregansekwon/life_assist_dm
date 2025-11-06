@@ -1,0 +1,17 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug Dialog Manager",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/life_assist_dm/life_assist_dm/dialog_manager/dialog_manager_node.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "/usr/bin/python3",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        }
+    ]
+}

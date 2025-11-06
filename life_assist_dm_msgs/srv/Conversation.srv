@@ -1,0 +1,7 @@
+# Request
+string ask
+---
+# Response
+bool success
+string answer
+string act_type
