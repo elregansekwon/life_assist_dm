@@ -2,27 +2,19 @@ from langchain_openai import ChatOpenAI
 from langchain.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
-# httpx 로그 억제 (rqt 메모리 과부하 방지)
 import logging as std_logging
 std_logging.getLogger("httpx").setLevel(std_logging.WARNING)
 std_logging.getLogger("httpcore").setLevel(std_logging.WARNING)
 
 
 class LifeAssistant:
-<<<<<<< HEAD
-    def __init__(self, model_name="gpt-4o-mini"):
-        self.llm = ChatOpenAI(model=model_name,
-                              temperature=0.4)
-=======
     def __init__(self, model_name="gpt-4o-mini-2024-07-18"):
-        # LLM 호출 timeout 설정 (10초) - ROS2 서비스 응답 지연 방지
         self.llm = ChatOpenAI(
             model=model_name,
             temperature=0.4,
-            timeout=10.0,  # 10초 timeout - rqt 서비스 응답 지연 방지
-            max_retries=1  # 재시도 최소화
+            timeout=10.0,
+            max_retries=1
         )
->>>>>>> 9f3045d (2025-11-06 수정 사항 반영)
         self.output_parser = StrOutputParser()
         self.prompt = PromptTemplate.from_template(
             "입력된 내용은 사람이 로봇에게 요청한 명령입니다."
@@ -52,15 +44,10 @@ class LifeAssistant:
 
 
 class SentenceCorrector:
-    """
-    """
     def __init__(self, model_name="gpt-4o-mini-2024-07-18"):
-        """
-        """
-        # LLM 호출 timeout 설정 (10초) - ROS2 서비스 응답 지연 방지
         self.llm = ChatOpenAI(
             model=model_name,
-            timeout=10.0,  # 10초 timeout
+            timeout=10.0,
             max_retries=1
         )
         self.output_parser = StrOutputParser()
@@ -68,7 +55,6 @@ class SentenceCorrector:
             "다음 문장은 음성 인식(STT)을 통해 자동으로 생성된 텍스트입니다. "
             "띄어쓰기, 문법 오류, 부자연스러운 표현이 있을 수 있습니다. "
             "문맥에 맞게 자연스럽고 완전한 문장으로 수정해주세요. "
-            #"문장으로 수정 후, 수정된 문장을 영어로 번역해주세요."
             "\n\n"
             "입력: {stt_text}\n\n"
             "수정된 문장:"
@@ -77,48 +63,20 @@ class SentenceCorrector:
         print("LangChain 교정기 초기화 완료.")
 
     def correct(self, text: str) -> str:
-        """
-        text is corrected by LLM
-        """
         if not text:
             return ""
         return self.chain.invoke({"stt_text": text})
 
 
-<<<<<<< HEAD
-#추가
-from langchain_openai import OpenAIEmbeddings
-
-def get_llm(model_name: str = "gpt-4o-mini-2024-07-18", temperature: float = 0.4):
-    """기본 LLM 객체 반환 (LifeAssistMemory에서 사용)"""
-    return ChatOpenAI(
-        model=model_name, 
-        temperature=temperature,
-        request_timeout=10,  # 10초 타임아웃 설정 (성능 향상)
-        max_retries=1  # 1번만 재시도 (빠른 fallback)
-    )
-
-def get_embedding():
-    """벡터스토어용 임베딩 함수"""
-    return OpenAIEmbeddings()
-#
-=======
-# =============================
-# 🔧 Compatibility Utilities
-# =============================
-
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
 def get_llm(model_name: str = "gpt-4o-mini-2024-07-18"):
-    """기존 코드 호환용: LangChain LLM 인스턴스 반환"""
     return ChatOpenAI(
         model=model_name, 
         temperature=0.4,
-        timeout=10.0,  # 10초 timeout
+        timeout=10.0,
         max_retries=1
     )
 
 def get_embedding(model_name: str = "text-embedding-3-small"):
-    """기존 코드 호환용: OpenAI Embedding 인스턴스 반환"""
     return OpenAIEmbeddings(model=model_name)
->>>>>>> 9f3045d (2025-11-06 수정 사항 반영)
