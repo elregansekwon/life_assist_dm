@@ -82,12 +82,12 @@ ros2 launch life_assist_dm dialog_manager.launch.py
 - 물리적 지원 → 수행 여부 확인 문장 + 영어 번역(`/`로 구분)
 
 **예시:**
-[인지] 오늘 감기약 드셨나요?
-[정서] 오늘 날씨가 좋네요.
-[물리적 지원] 물 갖다 드릴까요? / Would you like me to bring you some water?
+> [인지] 오늘 감기약 드셨나요?  
+> [정서] 오늘 날씨가 좋네요.  
+> [물리적 지원] 물 갖다 드릴까요? / Would you like me to bring you some water?
 
-yaml
-코드 복사
+
+
 
 ---
 
