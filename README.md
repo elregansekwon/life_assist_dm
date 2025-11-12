@@ -97,3 +97,19 @@ ros2 launch life_assist_dm dialog_manager.launch.py
 
 ---
 
+## ⚙️ 주요 설정 (Dialog Manager Node)
+
+```python
+MemoryConfig(
+    sqlite_path="~/.life_assist_dm/history.sqlite",
+    chroma_dir="~/.life_assist_dm/chroma",
+    use_window_k=5,
+    summary_enabled=True,
+    entity_enabled=True,
+    auto_export_enabled=True,
+    export_dir="conversation_extract",
+)
+````
+• 대화 종료 시 Excel로 자동 내보내기
+
+• 종료 키워드 ("종료", "그만", "안녕") 감지 시 세션 저장 및 마감
