@@ -82,9 +82,11 @@ ros2 launch life_assist_dm dialog_manager.launch.py
 - 물리적 지원 → 물리 수행 문장 + 영어로 번역 관리된 명령 로못에게 전달
 
 **예시:**
-[인지] >   오늘 감기약 드셨나요?  
-> [정서]   오늘 날씨가 좋네요.  
-> [물리적 지원]   물을 냉장고에서 가져다드리겠습니다.    { "action": "deliver", "target": "water", "location": "refrigerator", "original": "Please deliver water from refrigerator" }
+````
+[인지] 오늘 감기약 드셨나요?
+[정서] 오늘 날씨가 좋네요.
+[물리적 지원] 물 갖다 드릴까요?   { "action": "deliver", "target": "water", "location": "refrigerator", "original": "Please deliver water from refrigerator" }
+````
 
 ---
 
@@ -92,3 +94,6 @@ ros2 launch life_assist_dm dialog_manager.launch.py
 
 - STT 인식 결과의 **띄어쓰기 / 문법 보정** 수행  
 - 보다 자연스러운 문장으로 LLM 입력
+
+---
+
