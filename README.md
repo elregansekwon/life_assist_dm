@@ -79,15 +79,12 @@ ros2 launch life_assist_dm dialog_manager.launch.py
 
 - 입력 문장을 **[인지]**, **[정서]**, **[물리적 지원]** 중 하나로 분류  
 - 인지/정서 → 바로 자연어 응답 생성  
-- 물리적 지원 → 수행 여부 확인 문장 + 영어 번역(`/`로 구분)
+- 물리적 지원 → 물리 수행 문장 + 영어로 번역 관리된 명령 로못에게 전달
 
 **예시:**
 > [인지] 오늘 감기약 드셨나요?  
 > [정서] 오늘 날씨가 좋네요.  
-> [물리적 지원] 물 갖다 드릴까요? / Would you like me to bring you some water?
-
-
-
+> [물리적 지원] 물을 냉장고에서 가져다드리겠습니다. { "action": "deliver", "target": "water", "location": "refrigerator", "original": "Please deliver water from refrigerator" }
 
 ---
 
