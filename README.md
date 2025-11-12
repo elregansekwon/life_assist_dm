@@ -35,3 +35,16 @@ cd ../../..
 
 # 3️⃣ ROS2 빌드
 colcon build --symlink-install
+
+## 💬 실행 (Usage)
+
+```bash
+# Launch the dialog manager with STT/TTS nodes
+ros2 launch life_assist_dm dialog_manager.launch.py
+해당 launch 파일은 다음 노드를 함께 실행합니다:
+
+🧠 dialog_manager: 메인 대화 관리 노드
+
+🗣️ stt_node: STT(음성 인식) 노드 (whisper_model='base')
+
+🔊 tts_node: TTS(음성 합성) 노드
