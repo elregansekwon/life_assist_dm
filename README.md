@@ -41,6 +41,7 @@ colcon build --symlink-install
 ```bash
 # Launch the dialog manager with STT/TTS nodes
 ros2 launch life_assist_dm dialog_manager.launch.py
+````
 해당 launch 파일은 다음 노드를 함께 실행합니다:
 
 🧠 dialog_manager: 메인 대화 관리 노드
