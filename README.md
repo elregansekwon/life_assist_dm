@@ -22,7 +22,7 @@ ROS 2 기반 **생활 지원 로봇 대화 관리 노드**입니다.
 
 ## ⚙️ 설치 (Installation)
 
-```plaintext
+```bash
 # 1️⃣ 워크스페이스 생성 및 소스 다운로드
 cd ~/ros_ws && mkdir -p dm_ws/src
 cd ~/ros_ws/dm_ws/src
