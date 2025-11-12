@@ -4,9 +4,9 @@
 ROS 2 기반 **생활 지원 로봇 대화 관리 노드**입니다.  
 사용자의 **음성(STT)**을 인식하고, **LangChain 기반 LLM**과 **다층 메모리 모듈**로 처리하여  
 **인지 / 정서 / 물리적 지원** 형태의 응답 또는 **로봇 제어 명령**을 생성합니다.
-<br><br>
+
 ---
-<br><br>
+
 ## 🚀 주요 구성 (Core Components)
 
 | 모듈 | 설명 |
@@ -17,9 +17,9 @@ ROS 2 기반 **생활 지원 로봇 대화 관리 노드**입니다.
 | 🧩 **task_classifier.py** | 사용자 발화의 인텐트 분류 (인지 / 정서 / 물리적 지원) |
 | 📊 **user_excel_manager.py** | 사용자별 Excel 입출력 및 중복 병합 로직 |
 | 🚀 **launch/dialog_manager.launch.py** | ROS2 노드 일괄 실행 (dialog_manager / stt / tts) |
-<br><br>
+
 ---
-<br><br>
+
 ## ⚙️ 설치 (Installation)
 
 ```bash
@@ -36,9 +36,9 @@ cd ../../..
 # 3️⃣ ROS2 빌드
 colcon build --symlink-install
 ````
-<br><br>
+
 ---
-<br><br>
+
 ## 💬 실행 (Usage)
 
 ```bash
@@ -52,9 +52,9 @@ ros2 launch life_assist_dm dialog_manager.launch.py
 🗣️ stt_node: STT(음성 인식) 노드 (whisper_model='base')
 
 🔊 tts_node: TTS(음성 합성) 노드
-<br><br>
+
 ---
-<br><br>
+
 ## 🧩 시스템 동작 개요 (System Flow)
 
 ```text
@@ -70,9 +70,9 @@ ros2 launch life_assist_dm dialog_manager.launch.py
    ↓
 [TTS Node] — 최종 응답을 음성으로 출력
 ````
-<br><br>
+
 ---
-<br><br>
+
 ## 🧠 LLM 기반 체인 요약
 
 ### 🔹 **SupportClassifier**
@@ -94,9 +94,9 @@ ros2 launch life_assist_dm dialog_manager.launch.py
 
 - STT 인식 결과의 **띄어쓰기 / 문법 보정** 수행  
 - 보다 자연스러운 문장으로 LLM 입력
-<br><br>
+
 ---
-<br><br>
+
 ## ⚙️ 주요 설정 (Dialog Manager Node)
 
 ```python
@@ -112,9 +112,9 @@ MemoryConfig(
 ````
 - 대화 종료 시 Excel로 자동 내보내기
 - 종료 키워드 ("종료", "그만", "안녕") 감지 시 세션 저장 및 마감
-<br><br>
+
 ---
-<br><br>
+
 ## 🧾 예시 발화 (Examples)
 
 | 사용자 발화 | 처리 결과 |
@@ -123,9 +123,9 @@ MemoryConfig(
 | “자기 전에 감기약 한 알 먹어야 돼.” | 복약 정보로 인식 → Excel 기록 |
 | “핸드크림은 식탁 위에 있어.” | 물건 위치 정보로 저장 |
 | “이번 주 금요일 저녁 7시에 친구랑 약속 있어.” | 일정 정보 추출 및 시간 인식 |
-<br><br>
+
 ---
-<br><br>
+
 ## 🧰 기술 스택 (Tech Stack)
 
 | 항목 | 내용 |
@@ -135,12 +135,13 @@ MemoryConfig(
 | **Framework** | LangChain (PromptTemplate + OutputParser) |
 | **Storage** | SQLite + Chroma + Excel (Pandas) |
 | **Service Interfaces** | `STTListen.srv`, `TTSSpeak.srv` |
-<br><br>
+
 ---
-<br><br>
+
 ## 📄 라이선스 (License)
 
 **MIT License © 2025 KETI AI / 권서연**
+
 <br><br>
 본 프로젝트는 **생활 지원 로봇 대화 관리 모듈 연구**를 목적으로 제작되었습니다.  
 실험용 예제이며, 실제 서비스 배포 환경에서는 **STT / TTS / LLM API 설정**이 필요합니다.
