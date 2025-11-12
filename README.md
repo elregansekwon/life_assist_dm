@@ -37,6 +37,8 @@ cd ../../..
 colcon build --symlink-install
 ````
 
+---
+
 ## 💬 실행 (Usage)
 
 ```bash
@@ -50,3 +52,46 @@ ros2 launch life_assist_dm dialog_manager.launch.py
 🗣️ stt_node: STT(음성 인식) 노드 (whisper_model='base')
 
 🔊 tts_node: TTS(음성 합성) 노드
+
+---
+
+## 🧩 시스템 동작 개요 (System Flow)
+
+```text
+[User Speech]
+   ↓
+[STT Node] — 음성 인식 결과를 텍스트로 변환
+   ↓
+[Dialog Manager Node]
+   ├─ 인텐트 분류 (인지 / 정서 / 물리적 지원)
+   ├─ 메모리 처리 (기억, 일정, 약, 물건 등)
+   ├─ SQLite / Chroma / Excel 저장
+   └─ 응답 생성 또는 로봇 명령 생성
+   ↓
+[TTS Node] — 최종 응답을 음성으로 출력
+````
+
+---
+
+## 🧠 LLM 기반 체인 요약
+
+### 🔹 **SupportClassifier**
+
+- 입력 문장을 **[인지]**, **[정서]**, **[물리적 지원]** 중 하나로 분류  
+- 인지/정서 → 바로 자연어 응답 생성  
+- 물리적 지원 → 수행 여부 확인 문장 + 영어 번역(`/`로 구분)
+
+**예시:**
+[인지] 오늘 감기약 드셨나요?
+[정서] 오늘 날씨가 좋네요.
+[물리적 지원] 물 갖다 드릴까요? / Would you like me to bring you some water?
+
+yaml
+코드 복사
+
+---
+
+### 🔹 **SentenceCorrector**
+
+- STT 인식 결과의 **띄어쓰기 / 문법 보정** 수행  
+- 보다 자연스러운 문장으로 LLM 입력
