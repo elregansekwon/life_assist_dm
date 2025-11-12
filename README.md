@@ -112,3 +112,36 @@ MemoryConfig(
 ````
 - 대화 종료 시 Excel로 자동 내보내기
 - 종료 키워드 ("종료", "그만", "안녕") 감지 시 세션 저장 및 마감
+
+---
+
+## 🧾 예시 발화 (Examples)
+
+| 사용자 발화 | 처리 결과 |
+|--------------|------------|
+| “내일 오전 9시에 치과 예약해줘.” | 일정 엔티티로 인식 → Excel 저장 후 응답 출력 |
+| “자기 전에 감기약 한 알 먹어야 돼.” | 복약 정보로 인식 → Excel 기록 |
+| “핸드크림은 식탁 위에 있어.” | 물건 위치 정보로 저장 |
+| “이번 주 금요일 저녁 7시에 친구랑 약속 있어.” | 일정 정보 추출 및 시간 인식 |
+
+---
+
+## 🧰 기술 스택 (Tech Stack)
+
+| 항목 | 내용 |
+|------|------|
+| **Framework** | ROS 2 Rolling (Python 3.10) |
+| **Language Model** | OpenAI GPT-4o-mini |
+| **Framework** | LangChain (PromptTemplate + OutputParser) |
+| **Storage** | SQLite + Chroma + Excel (Pandas) |
+| **Service Interfaces** | `STTListen.srv`, `TTSSpeak.srv` |
+
+---
+
+## 📄 라이선스 (License)
+
+**MIT License © 2025 KETI AI / 권서연**
+
+본 프로젝트는 **생활 지원 로봇 대화 관리 모듈 연구**를 목적으로 제작되었습니다.  
+실험용 예제이며, 실제 서비스 배포 환경에서는 **STT / TTS / LLM API 설정**이 필요합니다.
+
