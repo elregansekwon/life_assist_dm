@@ -1,5 +1,6 @@
 # 🧠 LifeAssist DM  
 **Dialog Manager for Life Assist Robot**
+
 **KETI 한국전자기술연구원 2025-2026 인턴십**
 
 ROS 2 기반 **생활 지원 로봇 대화 관리 노드**입니다.  
