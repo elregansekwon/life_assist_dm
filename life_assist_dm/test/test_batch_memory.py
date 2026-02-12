@@ -7,7 +7,7 @@ from datetime import datetime
 sys.path.append('/home/keti/workspace/life_assist_dm_copy')
 
 # ✅ 중첩 구조에 맞는 import
-from life_assist_dm.life_assist_dm.llm.memory import LifeAssistMemory, MemoryConfig
+from life_assist_dm.llm.memory import LifeAssistMemory, MemoryConfig
 
 def _safe_sid(session_id, fallback):
     """NaN이나 빈 값 처리"""

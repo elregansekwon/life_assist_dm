@@ -36,7 +36,7 @@ PREFERENCE_PATTERNS = [
 ]
 
 try:
-    from life_assist_dm.life_assist_dm.support_chains import (
+    from life_assist_dm.support_chains import (
         EMOTION_POSITIVE_WORDS, EMOTION_NEGATIVE_WORDS, 
         EMOTION_TIRED_WORDS, EMOTION_ANXIOUS_WORDS
     )
@@ -99,7 +99,7 @@ def classify_hybrid(text: str) -> ClassificationResult:
     
     if preference_score == 0:
         try:
-            from life_assist_dm.life_assist_dm.support_chains import (
+            from life_assist_dm.support_chains import (
                 EMOTION_POSITIVE_WORDS, EMOTION_NEGATIVE_WORDS, 
                 EMOTION_TIRED_WORDS, EMOTION_ANXIOUS_WORDS
             )
@@ -161,7 +161,7 @@ def classify_hybrid(text: str) -> ClassificationResult:
         )
 
     try:
-        from life_assist_dm.life_assist_dm.llm.gpt_utils import get_llm
+        from life_assist_dm.llm.gpt_utils import get_llm
         llm = get_llm()
         prompt = f"""다음 한국어 문장을 분석하여 의도를 분류해주세요: "{text}"
 

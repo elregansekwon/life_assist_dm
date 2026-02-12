@@ -19,12 +19,12 @@ os.environ['PYTHONIOENCODING'] = 'utf-8'
 import rclpy
 from rclpy.node import Node
 
-from life_assist_dm.life_assist_dm.dialog_manager.config import DialogManagerHeader
-from life_assist_dm.life_assist_dm.llm.gpt_utils import LifeAssistant
+from life_assist_dm.dialog_manager.config import DialogManagerHeader
+from life_assist_dm.llm.gpt_utils import LifeAssistant
 from life_assist_dm_msgs.srv import Conversation
 
-from life_assist_dm.life_assist_dm.task_classifier import classify_hybrid
-from life_assist_dm.life_assist_dm.memory import LifeAssistMemory
+from life_assist_dm.task_classifier import classify_hybrid
+from life_assist_dm.memory import LifeAssistMemory
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -95,8 +95,8 @@ class DialogManager(Node):
 
     def _summarize_emotion_context(self, user_text: str) -> str:
         try:
-            from life_assist_dm.life_assist_dm.support_chains import _summarize_emotion_context_for_save
-            from life_assist_dm.life_assist_dm.llm.gpt_utils import get_llm
+            from life_assist_dm.support_chains import _summarize_emotion_context_for_save
+            from life_assist_dm.llm.gpt_utils import get_llm
             llm = get_llm()
             return _summarize_emotion_context_for_save(user_text, llm)
         except Exception as e:
@@ -179,7 +179,7 @@ class DialogManager(Node):
             if hasattr(self.memory, 'pending_question') and session_id in self.memory.pending_question and not is_new_command:
                 # 새 명령이 아니면 pending_question 처리
                 self.get_logger().info(f"[PENDING] 처리 시작: {self.memory.pending_question[session_id]}")
-                from life_assist_dm.life_assist_dm.support_chains import handle_pending_answer
+                from life_assist_dm.support_chains import handle_pending_answer
                 answer = handle_pending_answer(user_text, self.memory, session_id)
                 if isinstance(answer, dict):
                     response.success = answer.get('success', True)
@@ -217,7 +217,7 @@ class DialogManager(Node):
                     else:
 
                         try:
-                            from life_assist_dm.life_assist_dm.llm.gpt_utils import get_llm
+                            from life_assist_dm.llm.gpt_utils import get_llm
                             llm = get_llm()
                             
                             prompt = f"""다음 사용자 응답에서 이름만 추출하세요. 다른 정보는 무시하세요.
@@ -316,7 +316,7 @@ class DialogManager(Node):
                         return response
 
             if user_text.strip().endswith("?") or any(k in user_text for k in ["기억", "알고", "알아"]):
-                from life_assist_dm.life_assist_dm.support_chains import handle_query_with_lcel
+                from life_assist_dm.support_chains import handle_query_with_lcel
                 answer = handle_query_with_lcel(user_text, self.memory, session_id)
                 response.success = True
                 response.answer = str(answer)
@@ -354,12 +354,12 @@ class DialogManager(Node):
 
                     q_guard = (user_text.strip().endswith("?") or any(k in user_text for k in ["기억", "알고", "알아"]))
                     if q_guard:
-                        from life_assist_dm.life_assist_dm.support_chains import handle_query_with_lcel
+                        from life_assist_dm.support_chains import handle_query_with_lcel
                         answer = handle_query_with_lcel(user_text, self.memory, session_id)
                         answer_parts.append(str(answer))
                         continue
 
-                    from life_assist_dm.life_assist_dm.support_chains import handle_cognitive_task_with_lcel
+                    from life_assist_dm.support_chains import handle_cognitive_task_with_lcel
                     answer = handle_cognitive_task_with_lcel(user_text, self.memory, session_id)
 
                     if isinstance(answer, dict):
@@ -381,7 +381,7 @@ class DialogManager(Node):
 
                 elif act_type == "physical" and not processed_physical:
 
-                    from life_assist_dm.life_assist_dm.support_chains import handle_physical_task
+                    from life_assist_dm.support_chains import handle_physical_task
                     try:
                         physical_result = handle_physical_task(user_text, self.memory, session_id)
                         self.get_logger().info(f"[PHYSICAL RESULT] {physical_result}")
@@ -398,7 +398,7 @@ class DialogManager(Node):
                         answer_parts.append("물리적 작업 처리 중 오류가 발생했어요. 잠시 후 다시 시도해 주세요.")
 
                 elif act_type == "emotional":
-                    from life_assist_dm.life_assist_dm.support_chains import build_emotional_reply
+                    from life_assist_dm.support_chains import build_emotional_reply
 
                     user_name_confirmed = bool(self.memory.user_names.get(session_id))
                     answer = build_emotional_reply(user_text, self.memory.llm, user_name_confirmed)
@@ -409,7 +409,7 @@ class DialogManager(Node):
                             user_name_log = self.memory.user_names.get(session_id)
                             if user_name_log and user_name_log != "사용자":
 
-                                from life_assist_dm.life_assist_dm.support_chains import _extract_emotion_word_and_label
+                                from life_assist_dm.support_chains import _extract_emotion_word_and_label
                                 emotion_word, emo_label = _extract_emotion_word_and_label(user_text)
                                 
                                 emotion_to_save = emotion_word if emotion_word else (emo_label if emo_label else "중립")
@@ -427,7 +427,7 @@ class DialogManager(Node):
                         self.get_logger().debug("[SKIP] 감정 기록 중복 저장 방지 (cognitive에서 이미 저장됨)")
 
                 elif act_type == "query":
-                    from life_assist_dm.life_assist_dm.support_chains import handle_query_with_lcel
+                    from life_assist_dm.support_chains import handle_query_with_lcel
                     answer = handle_query_with_lcel(user_text, self.memory, session_id)
                     answer_parts.append(str(answer))
 

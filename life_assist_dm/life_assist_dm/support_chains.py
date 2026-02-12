@@ -1514,7 +1514,7 @@ def handle_query_with_lcel(user_input: str, memory_instance, session_id: str) ->
     try:
 
         text = (user_input or "").strip()
-        from life_assist_dm.life_assist_dm.dialog_manager.config.config_loader import (
+        from life_assist_dm.dialog_manager.config.config_loader import (
             get_personal_info_config,
             get_excel_sheets,
         )
@@ -1544,7 +1544,7 @@ def handle_query_with_lcel(user_input: str, memory_instance, session_id: str) ->
         classification = _classify_profile_query_llm(text)
 
         if classification.get("type") == "user_profile":
-            from life_assist_dm.life_assist_dm.user_excel_manager import UserExcelManager
+            from life_assist_dm.user_excel_manager import UserExcelManager
             user_name = memory_instance.user_names.get(session_id or "default")
             if not user_name:
                 return "사용자 이름을 먼저 알려주세요."
@@ -1618,7 +1618,7 @@ def handle_query_with_lcel(user_input: str, memory_instance, session_id: str) ->
                 pass
 
             try:
-                from life_assist_dm.life_assist_dm.llm.gpt_utils import get_llm
+                from life_assist_dm.llm.gpt_utils import get_llm
                 llm = get_llm()
                 kv_lines = [f"- {k}: {v}" for k, v in context_map.items()]
                 context_text = "\n".join(kv_lines) if kv_lines else "없음"
@@ -1747,7 +1747,7 @@ def handle_query_with_lcel(user_input: str, memory_instance, session_id: str) ->
                                         break
 
                     if len(prefs) < 3:
-                        from life_assist_dm.life_assist_dm.dialog_manager.config.config_loader import get_excel_sheets
+                        from life_assist_dm.dialog_manager.config.config_loader import get_excel_sheets
                         sheets = get_excel_sheets()
                         df_kv = excel.safe_load_sheet(user_name, sheets.get("user_info_kv", "사용자정보KV"))
                         if df_kv is not None and not df_kv.empty:
@@ -2065,7 +2065,7 @@ def handle_query_with_lcel(user_input: str, memory_instance, session_id: str) ->
 
             kv_map = {}
             try:
-                from life_assist_dm.life_assist_dm.dialog_manager.config.config_loader import get_excel_sheets
+                from life_assist_dm.dialog_manager.config.config_loader import get_excel_sheets
                 sheets = get_excel_sheets()
 
                 excel = memory_instance.excel_manager
@@ -2082,7 +2082,7 @@ def handle_query_with_lcel(user_input: str, memory_instance, session_id: str) ->
                 kv_map = {}
 
             try:
-                from life_assist_dm.life_assist_dm.llm.gpt_utils import get_llm
+                from life_assist_dm.llm.gpt_utils import get_llm
                 llm = get_llm()
                 context_lines = [f"- {k}: {v}" for k, v in kv_map.items()]
                 context_text = "\n".join(context_lines)
@@ -2378,7 +2378,7 @@ def handle_cognitive_task_with_lcel(user_input: str, memory_instance, session_id
                 except Exception:
                     pass
 
-            from life_assist_dm.life_assist_dm.task_classifier import FAMILY_RELATION_KEYWORDS
+            from life_assist_dm.task_classifier import FAMILY_RELATION_KEYWORDS
             has_family_keywords = any(keyword in user_input for keyword in FAMILY_RELATION_KEYWORDS)
 
             if has_family_keywords and (not entities or "user.가족" not in entities):
@@ -2833,7 +2833,7 @@ def handle_cognitive_task_with_lcel(user_input: str, memory_instance, session_id
 
             entity_already_saved = bool(entities and isinstance(entities, dict) and entities.get("user.물건"))
             if any(keyword in user_input for keyword in ["가져", "갖다", "와", "가지고 와", "꺼내", "정리", "열어"]):
-                from life_assist_dm.life_assist_dm.support_chains import handle_physical_task
+                from life_assist_dm.support_chains import handle_physical_task
                 print("[CHAIN] 복합 명령 감지됨 → 물리 행동 연결 수행")
                 result = handle_physical_task(user_input, memory_instance, session_id, entity_already_saved=entity_already_saved)
                 return result
@@ -2856,7 +2856,7 @@ def handle_cognitive_task_with_lcel(user_input: str, memory_instance, session_id
             return response.content.strip()
 
         if any(keyword in user_input for keyword in ["가져", "갖다", "와", "가지고 와", "꺼내", "정리", "열어"]):
-            from life_assist_dm.life_assist_dm.support_chains import handle_physical_task
+            from life_assist_dm.support_chains import handle_physical_task
             print("[CHAIN] 복합 명령 감지됨 → 물리 행동 연결 수행")
             result = handle_physical_task(user_input, memory_instance, session_id)
             return result
@@ -2870,7 +2870,7 @@ def handle_cognitive_task_with_lcel(user_input: str, memory_instance, session_id
         traceback.print_exc()
 
         if any(keyword in user_input for keyword in ["가져", "갖다", "와", "가지고 와", "꺼내", "정리", "열어"]):
-            from life_assist_dm.life_assist_dm.support_chains import handle_physical_task
+            from life_assist_dm.support_chains import handle_physical_task
             print("[CHAIN] cognitive 오류 후 물리 행동 처리")
             try:
                 result = handle_physical_task(user_input, memory_instance, session_id)

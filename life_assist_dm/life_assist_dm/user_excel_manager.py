@@ -296,7 +296,7 @@ class UserExcelManager:
                 date_value = data.get("날짜", "")
                 if date_value:
                     try:
-                        from life_assist_dm.life_assist_dm.support_chains import _normalize_date_to_iso
+                        from life_assist_dm.support_chains import _normalize_date_to_iso
                         date_str = str(date_value).strip()
                         if date_str and date_str.lower() not in ("nan", "none", ""):
                             norm["날짜"] = _normalize_date_to_iso(date_str)
@@ -321,7 +321,7 @@ class UserExcelManager:
                 date_value = data.get("날짜", "")
                 if date_value:
                     try:
-                        from life_assist_dm.life_assist_dm.support_chains import _normalize_date_to_iso
+                        from life_assist_dm.support_chains import _normalize_date_to_iso
                         date_str = str(date_value).strip()
                         if date_str and date_str.lower() not in ("nan", "none", ""):
                             norm["날짜"] = _normalize_date_to_iso(date_str)

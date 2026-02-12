@@ -5,8 +5,8 @@ from rclpy.qos import ReliabilityPolicy, QoSProfile
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 
-from life_assist_dm.life_assist_dm.llm.whisper_utils import WhisperTranscriber
-from life_assist_dm.life_assist_dm.llm.gpt_utils import SentenceCorrector
+from life_assist_dm.llm.whisper_utils import WhisperTranscriber
+from life_assist_dm.llm.gpt_utils import SentenceCorrector
 
 from life_assist_dm_msgs.srv import STTListen
 

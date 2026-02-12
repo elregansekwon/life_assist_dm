@@ -17,7 +17,7 @@ logging.getLogger("urllib3").setLevel(logging.ERROR)
 warnings.filterwarnings("ignore")
 os.environ["PYTHONWARNINGS"] = "ignore"
 
-from life_assist_dm.life_assist_dm.llm.memory import LifeAssistMemory, MemoryConfig
+from life_assist_dm.llm.memory import LifeAssistMemory, MemoryConfig
 import json
 
 def run_repl():

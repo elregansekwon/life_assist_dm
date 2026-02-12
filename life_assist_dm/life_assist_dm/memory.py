@@ -44,7 +44,7 @@ from langchain_core.output_parsers import JsonOutputParser
 
 from .task_classifier import classify_hybrid, ClassificationResult
 from .support_chains import build_emotional_reply, handle_physical_task, handle_pending_answer
-from life_assist_dm.life_assist_dm.llm.gpt_utils import get_llm, get_embedding
+from life_assist_dm.llm.gpt_utils import get_llm, get_embedding
 import pandas as pd
 
 
@@ -154,7 +154,7 @@ class LifeAssistMemory:
         self.user_names = {}
         
 
-        from life_assist_dm.life_assist_dm.llm.gpt_utils import get_llm, get_embedding
+        from life_assist_dm.llm.gpt_utils import get_llm, get_embedding
         self.llm = get_llm()
         self.debug = debug
 
@@ -204,7 +204,7 @@ class LifeAssistMemory:
         )
         
 
-        from life_assist_dm.life_assist_dm.llm.gpt_utils import get_llm, get_embedding
+        from life_assist_dm.llm.gpt_utils import get_llm, get_embedding
         llm = get_llm()
         self.summary_memory = ConversationSummaryBufferMemory(
             llm=llm,
@@ -350,6 +350,44 @@ class LifeAssistMemory:
 
     
 
+    def get_excel_data(self, session_id: str, sheet_name: str) -> List[dict]:
+        """
+        엑셀 시트 데이터를 딕셔너리 리스트로 반환
+        
+        Args:
+            session_id: 세션 ID
+            sheet_name: 엑셀 시트 이름 (예: "사용자", "사용자정보KV", "대화")
+        
+        Returns:
+            딕셔너리 리스트 (빈 리스트 반환 가능)
+        """
+        try:
+            user_name = self.user_names.get(session_id or "default_session")
+            if not user_name:
+                return []
+            
+            df = self.excel_manager.load_sheet_data(user_name, sheet_name)
+            if df is None or df.empty:
+                return []
+            
+            # DataFrame을 딕셔너리 리스트로 변환
+            result = []
+            for _, row in df.iterrows():
+                row_dict = {}
+                for col in df.columns:
+                    value = row.get(col)
+                    # NaN 값 처리
+                    if pd.isna(value):
+                        value = ""
+                    row_dict[col] = value
+                result.append(row_dict)
+            
+            return result
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"get_excel_data 오류: {e}")
+            return []
+    
     def get_location(self, target: str, return_dict: bool = False) -> Optional[Union[str, dict]]:
         try:
             session_id = "default_session"
@@ -481,7 +519,7 @@ class LifeAssistMemory:
                     conversation_text += f"{role}: {msg.content}\n"
             
 
-            from life_assist_dm.life_assist_dm.llm.gpt_utils import get_llm, get_embedding
+            from life_assist_dm.llm.gpt_utils import get_llm, get_embedding
             llm = get_llm()
             
             summary_prompt = f"""
@@ -5790,7 +5828,7 @@ confidence는 이름 추출의 확신도를 나타냅니다:
                         if emotion_state:
 
 
-                            from life_assist_dm.life_assist_dm.support_chains import _summarize_emotion_context_for_save
+                            from life_assist_dm.support_chains import _summarize_emotion_context_for_save
                             info_summary = _summarize_emotion_context_for_save(user_text, self.llm if hasattr(self, 'llm') else None)
                             
                             save_result = self.save_entity_to_vectorstore(
