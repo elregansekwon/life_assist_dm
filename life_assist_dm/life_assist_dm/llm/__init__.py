@@ -12,8 +12,12 @@ package_root = current_file.parent.parent
 env_file = package_root / ".env"
 
 if env_file.exists():
-    load_dotenv(env_file)
-    print(f"[INFO] .env 파일 로드 완료: {env_file}")
+    try:
+        load_dotenv(env_file)
+        print(f"[INFO] .env 파일 로드 완료: {env_file}")
+    except Exception as e:
+        print(f"[ERROR] .env 파일 로드 실패: {e}")
+        raise e
 else:
     # fallback: llm 디렉토리 내 .env 파일
     llm_env = current_file.parent / ".env"

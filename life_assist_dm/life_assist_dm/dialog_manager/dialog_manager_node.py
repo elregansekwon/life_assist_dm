@@ -77,11 +77,6 @@ class DialogManager(Node):
         header = DialogManagerHeader(self)
         self.cfg = header.cfg
 
-        self.life_assistant = LifeAssistant(model_name=self.cfg.dm.gpt_model)
-        self.memory = LifeAssistMemory(self.cfg)
-        # ✅ PhysicalSupportChain은 현재 사용되지 않음 (handle_physical_task를 직접 호출)
-        # self.support_chain = PhysicalSupportChain()
-
         # 사용자 이름 확인 상태 추적
         self.user_name_status = {}  # {session_id: "unknown" | "asking" | "confirmed"}
         
@@ -89,9 +84,32 @@ class DialogManager(Node):
         self.last_conversation_time = {}  # {session_id: timestamp}
         self.session_timeout = 180  # 3분 = 180초
 
+        # 서비스를 먼저 등록 (초기화 실패해도 서비스는 등록되도록)
         self.conversation_service = self.create_service(Conversation,   
                                                         'conversation',
-                                                        self.handle_conversation)   
+                                                        self.handle_conversation)
+        
+        # 초기화 (서비스 등록 후)
+        try:
+            self.life_assistant = LifeAssistant(model_name=self.cfg.dm.gpt_model)
+            self.get_logger().info("LifeAssistant 초기화 완료")
+        except Exception as e:
+            self.get_logger().error(f"LifeAssistant 초기화 실패: {e}")
+            import traceback
+            self.get_logger().error(traceback.format_exc())
+            self.life_assistant = None
+        
+        try:
+            self.memory = LifeAssistMemory(self.cfg)
+            self.get_logger().info("LifeAssistMemory 초기화 완료")
+        except Exception as e:
+            self.get_logger().error(f"LifeAssistMemory 초기화 실패: {e}")
+            import traceback
+            self.get_logger().error(traceback.format_exc())
+            self.memory = None
+        
+        # ✅ PhysicalSupportChain은 현재 사용되지 않음 (handle_physical_task를 직접 호출)
+        # self.support_chain = PhysicalSupportChain()   
 
     def _summarize_emotion_context(self, user_text: str) -> str:
         try:
@@ -107,6 +125,14 @@ class DialogManager(Node):
     def handle_conversation(self, request, response):
 
         user_text = request.ask
+
+        # 초기화 실패 체크
+        if self.life_assistant is None or self.memory is None:
+            self.get_logger().error("LifeAssistant 또는 Memory가 초기화되지 않았습니다.")
+            response.success = False
+            response.answer = "시스템 초기화 중 오류가 발생했습니다. 로그를 확인해주세요."
+            response.act_type = "unknown"
+            return response
 
         try:
             self.get_logger().info(f"USER -> ROBOT: {user_text}")
