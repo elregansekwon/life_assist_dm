@@ -388,6 +388,214 @@ class LifeAssistMemory:
             logging.getLogger(__name__).warning(f"get_excel_data 오류: {e}")
             return []
     
+    def load_user_data_from_excel(self, user_name: str, session_id: str):
+        """엑셀 파일에서 사용자 데이터 로딩 (SQLite/VectorStore 대신)"""
+        try:
+            print(f"[DEBUG] 엑셀에서 사용자 데이터 로딩 시작: {user_name}")
+            
+            if not self.excel_manager.user_exists(user_name):
+                print(f"[DEBUG] 사용자 엑셀 파일 없음: {user_name}")
+                return
+            
+            # 엑셀에서 각 시트 데이터 로딩하여 메모리에 임시 저장
+            sheets_data = {}
+            
+            # 물건 위치 로딩
+            df_items = self.excel_manager.load_sheet_data(user_name, "물건위치")
+            if not df_items.empty:
+                items = []
+                for _, row in df_items.iterrows():
+                    # 과거 데이터 호환: '물건이름' 우선, 없으면 '이름' 사용
+                    name_val = row.get("물건이름", None)
+                    if name_val is None or name_val == "":
+                        name_val = row.get("이름", "")
+                    loc_val = row.get("위치", "")
+                    try:
+                        import pandas as pd
+                        if pd.isna(name_val):
+                            name_val = ""
+                        if pd.isna(loc_val):
+                            loc_val = ""
+                    except Exception:
+                        pass
+                    items.append({
+                        "이름": name_val,
+                        "위치": loc_val
+                    })
+                sheets_data["물건"] = items
+                print(f"[DEBUG] 물건 위치 {len(items)}개 로딩")
+            
+            # 가족 관계 로딩
+            df_family = self.excel_manager.load_sheet_data(user_name, "가족관계")
+            if not df_family.empty:
+                family = []
+                for _, row in df_family.iterrows():
+                    family.append({
+                        "관계": row.get("관계", ""),
+                        "이름": row.get("이름", ""),
+                        "정보": row.get("정보", "")
+                    })
+                sheets_data["가족"] = family
+                print(f"[DEBUG] 가족 관계 {len(family)}개 로딩")
+            
+            # 일정 로딩
+            df_schedule = self.excel_manager.load_sheet_data(user_name, "일정")
+            if not df_schedule.empty:
+                schedules = []
+                for _, row in df_schedule.iterrows():
+                    schedules.append({
+                        "제목": row.get("일정내용", ""),
+                        "날짜": row.get("날짜", ""),
+                        "시간": row.get("시간", ""),
+                        "장소": row.get("장소", "")
+                    })
+                sheets_data["일정"] = schedules
+                print(f"[DEBUG] 일정 {len(schedules)}개 로딩")
+            
+            # 대화 기록 로딩 (최근 10개) 및 LCEL 메모리에 추가
+            df_conversations = self.excel_manager.load_sheet_data(user_name, "대화기록")
+            if not df_conversations.empty:
+                # 최근 10개 로딩 (더 많은 맥락 유지를 위해)
+                recent_conversations = df_conversations.tail(10)
+                conversations = []
+                
+                # LCEL 메모리에 대화 기록 추가
+                try:
+                    # 기존 세션 메모리가 있는지 확인하고, 없으면 새로 생성
+                    chat_memory = self.conversation_memory.chat_memory
+                    
+                    # 기존 메시지가 없을 때만 엑셀 대화 기록 추가 (중복 방지)
+                    existing_messages = chat_memory.messages
+                    if not existing_messages or len(existing_messages) == 0:
+                        print(f"[DEBUG] 기존 메시지 없음 - 엑셀 대화 기록을 LCEL 메모리에 로딩")
+                        
+                        for _, row in recent_conversations.iterrows():
+                            conv_summary = row.get("대화요약", "")
+                            if not conv_summary or str(conv_summary).strip() == "":
+                                continue
+                            
+                            conv_text = str(conv_summary).strip()
+                            conversations.append({
+                                "날짜": row.get("날짜", ""),
+                                "시간": row.get("시간", ""),
+                                "대화요약": conv_text
+                            })
+                            
+                            # 대화 요약 파싱: "Q: 질문 | A: 답변" 형식
+                            question = None
+                            answer = None
+                            
+                            # 1. "Q: 질문 | A: 답변" 형식 처리
+                            if "Q:" in conv_text and "A:" in conv_text:
+                                # " | A:" 패턴으로 split
+                                if " | A:" in conv_text:
+                                    parts = conv_text.split(" | A:", 1)
+                                    if len(parts) == 2:
+                                        question = parts[0].replace("Q:", "").strip()
+                                        answer = parts[1].strip()
+                                else:
+                                    # "A:" 기준으로 split (대체 방법)
+                                    parts = conv_text.split("A:", 1)
+                                    if len(parts) == 2:
+                                        question = parts[0].replace("Q:", "").strip()
+                                        answer = parts[1].strip()
+                            
+                            # 2. "질문 | 답변" 형식 처리 (Q: A: 없이)
+                            elif "|" in conv_text and not question:
+                                parts = conv_text.split("|", 1)
+                                if len(parts) == 2:
+                                    question = parts[0].strip()
+                                    answer = parts[1].strip()
+                            
+                            # 3. 파싱된 질문/답변을 메모리에 추가
+                            if question and answer:
+                                chat_memory.add_user_message(question)
+                                chat_memory.add_ai_message(answer)
+                            elif question:
+                                # 질문만 있는 경우
+                                chat_memory.add_user_message(question)
+                            elif answer:
+                                # 답변만 있는 경우 (일반적이지 않지만)
+                                chat_memory.add_ai_message(answer)
+                            else:
+                                # 단순 텍스트인 경우 - 사용자 메시지로 간주
+                                # (시스템 메시지나 요약 등은 건너뛰기)
+                                if conv_text:
+                                    # 너무 짧거나 시스템 메시지 같은 것은 건너뛰기
+                                    skip_keywords = ["세션", "타임아웃", "종료", "초기화"]
+                                    if len(conv_text) > 5 and not any(kw in conv_text for kw in skip_keywords):
+                                        chat_memory.add_user_message(conv_text)
+                        
+                        print(f"[DEBUG] LCEL 메모리에 대화 기록 {len(conversations)}개 추가 완료")
+                    else:
+                        print(f"[DEBUG] 기존 메시지 존재 ({len(existing_messages)}개) - 엑셀 대화 기록 추가 건너뜀")
+                        
+                        # 캐시용으로만 저장
+                        for _, row in recent_conversations.iterrows():
+                            conversations.append({
+                                "날짜": row.get("날짜", ""),
+                                "시간": row.get("시간", ""),
+                                "대화요약": row.get("대화요약", "")
+                            })
+                except Exception as e:
+                    print(f"[ERROR] LCEL 메모리에 대화 기록 추가 실패: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    # 실패해도 캐시는 저장
+                    for _, row in recent_conversations.iterrows():
+                        conversations.append({
+                            "날짜": row.get("날짜", ""),
+                            "시간": row.get("시간", ""),
+                            "대화요약": row.get("대화요약", "")
+                        })
+                
+                sheets_data["대화"] = conversations
+                print(f"[DEBUG] 대화 기록 {len(conversations)}개 로딩 (캐시)")
+
+            # 사용자 개인정보 로딩: 사용자정보KV에서 최신값 계산
+            from .dialog_manager.config.config_loader import get_excel_sheets
+            sheets = get_excel_sheets()
+            df_userkv = self.excel_manager.load_sheet_data(user_name, sheets.get("user_info_kv", "사용자정보KV"))
+            if not df_userkv.empty:
+                latest_map = {}
+                try:
+                    # 최근 행이 가장 아래라고 가정하고 역순으로 스캔하여 최초 매칭을 최신으로 사용
+                    for _, row in df_userkv.iloc[::-1].iterrows():
+                        key = str(row.get("키", "")).strip()
+                        if not key:
+                            continue
+                        val = row.get("값", "")
+                        sval = str(val).strip()
+                        if sval.lower() in ("nan", "none"):
+                            continue
+                        if key and key not in latest_map and sval != "":
+                            latest_map[key] = sval
+                    user_row = {
+                        "이름": latest_map.get("이름", ""),
+                        "나이": latest_map.get("나이", ""),
+                        "학교": latest_map.get("학교", ""),
+                        "직업": latest_map.get("직업", ""),
+                        "취미": latest_map.get("취미", ""),
+                        "날짜": df_userkv.iloc[-1].get("날짜", "")
+                    }
+                    sheets_data["사용자"] = [user_row]
+                    print(f"[DEBUG] 사용자정보(KV) 로딩 완료: keys={list(k for k,v in latest_map.items() if v)}")
+                except Exception as e:
+                    print(f"[ERROR] 사용자정보KV 처리 실패: {e}")
+            
+            # 세션별 임시 저장소에 저장
+            if not hasattr(self, 'excel_cache'):
+                self.excel_cache = {}
+            self.excel_cache[session_id] = sheets_data
+            
+            print(f"[DEBUG] 엑셀 데이터 로딩 완료: {user_name}")
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"load_user_data_from_excel 오류: {e}")
+            import traceback
+            logger.warning(traceback.format_exc())
+    
     def get_location(self, target: str, return_dict: bool = False) -> Optional[Union[str, dict]]:
         try:
             session_id = "default_session"
@@ -573,7 +781,7 @@ class LifeAssistMemory:
             session_id = pending_data.get("session_id")
             
             try:
-                user_name = self.user_names.get(session_id or "default")
+                user_name = self.user_names.get(session_id) or self.user_names.get("default_session") or self.user_names.get("default")
                 if user_name and user_name != "사용자":
                     self.excel_manager.save_entity_data(user_name, entity_type, new_data)
                     
@@ -1209,20 +1417,20 @@ class LifeAssistMemory:
                 "- 식사: {{\"끼니\": \"점심\", \"메뉴\": [\"햄버거\"], \"날짜\": \"오늘\", \"시간\": \"12:30\"}}\n"
                 "- 기념일: {{\"관계\": \"사용자\", \"제목\": \"생일\", \"날짜\": \"4월 7일\"}}\n"
                 "- 건강상태: {{\"증상\": \"두통\", \"정도\": \"심함\", \"기간\": \"3일\", \"질병\": \"당뇨\"}}\n"
-                "- 물건: {{\"이름\": \"열쇠\", \"위치\": \"거실 책상 위에\", \"장소\": \"거실 책상\", \"세부위치\": \"위에\"}}\n"
-                "- 물건: {{\"이름\": \"안약\", \"위치\": \"내방 안에\", \"장소\": \"내방\", \"세부위치\": \"안에\"}}\n"
-                "- 물건: {{\"이름\": \"지갑\", \"위치\": \"침실 옆에\", \"장소\": \"침실\", \"세부위치\": \"옆에\"}}\n"
+                "- 물건: {{\"이름\": \"열쇠\", \"위치\": \"거실 책상 위에\", \"장소\": \"거실 책상\", \"세부위치\": \"위\"}}\n"
+                "- 물건: {{\"이름\": \"안약\", \"위치\": \"내방 안에\", \"장소\": \"내방\", \"세부위치\": \"안\"}}\n"
+                "- 물건: {{\"이름\": \"지갑\", \"위치\": \"침실 옆에\", \"장소\": \"침실\", \"세부위치\": \"옆\"}}\n"
                 "- 물건: {{\"이름\": \"물\", \"위치\": \"냉장고에\", \"장소\": \"냉장고\", \"세부위치\": \"\"}}\n"
-                "- 물건: {{\"이름\": \"머리끈\", \"위치\": \"책상 위에\", \"장소\": \"책상\", \"세부위치\": \"위에\"}}\n"
+                "- 물건: {{\"이름\": \"머리끈\", \"위치\": \"책상 위에\", \"장소\": \"책상\", \"세부위치\": \"위\"}}\n"
                 "- 물건 (위치만): {{\"이름\": \"펜\", \"위치\": \"책상\", \"장소\": \"책상\", \"세부위치\": \"\"}}\n\n"
                 "**물건 위치 추출 규칙 (중요!):**\n"
-                "- '안약은 내방 안에 있어' → {{\"user.물건\": [{{\"이름\": \"안약\", \"위치\": \"내방 안에\", \"장소\": \"내방\", \"세부위치\": \"안에\"}}]}}\n"
-                "- '열쇠는 거실 책상 위에 있어' → {{\"user.물건\": [{{\"이름\": \"열쇠\", \"위치\": \"거실 책상 위에\", \"장소\": \"거실 책상\", \"세부위치\": \"위에\"}}]}}\n"
+                "- '안약은 내방 안에 있어' → {{\"user.물건\": [{{\"이름\": \"안약\", \"위치\": \"내방 안에\", \"장소\": \"내방\", \"세부위치\": \"안\"}}]}}\n"
+                "- '열쇠는 거실 책상 위에 있어' → {{\"user.물건\": [{{\"이름\": \"열쇠\", \"위치\": \"거실 책상 위에\", \"장소\": \"거실 책상\", \"세부위치\": \"위\"}}]}}\n"
                 "- '지갑은 침실에 있어' → {{\"user.물건\": [{{\"이름\": \"지갑\", \"위치\": \"침실\", \"장소\": \"침실\", \"세부위치\": \"\"}}]}}\n"
                 "- '물은 냉장고에 있어' → {{\"user.물건\": [{{\"이름\": \"물\", \"위치\": \"냉장고에\", \"장소\": \"냉장고\", \"세부위치\": \"\"}}]}}\n"
-                "- '머리끈은 책상 위에 있어' → {{\"user.물건\": [{{\"이름\": \"머리끈\", \"위치\": \"책상 위에\", \"장소\": \"책상\", \"세부위치\": \"위에\"}}]}}\n"
-                "- 위치 표현에서 \"위에\", \"안에\", \"옆에\", \"앞에\", \"뒤에\", \"아래에\" 같은 방향 표현은 반드시 \"세부위치\" 필드로 추출하세요!\n"
-                "- \"장소\" 필드는 방향 표현을 제외한 나머지 부분입니다 (예: \"내방 안에\" → 장소=\"내방\", 세부위치=\"안에\")\n"
+                "- '머리끈은 책상 위에 있어' → {{\"user.물건\": [{{\"이름\": \"머리끈\", \"위치\": \"책상 위에\", \"장소\": \"책상\", \"세부위치\": \"위\"}}]}}\n"
+                "- 위치 표현에서 \"위에\", \"안에\", \"옆에\", \"앞에\", \"뒤에\", \"아래에\" 같은 방향 표현은 반드시 \"세부위치\" 필드로 추출하세요! 단, 조사 \"에\"는 제거하고 방향어만 저장 (예: \"위에\"→\"위\", \"안에\"→\"안\", \"옆에\"→\"옆\")!\n"
+                "- \"장소\" 필드는 방향 표현을 제외한 나머지 부분입니다 (예: \"내방 안에\" → 장소=\"내방\", 세부위치=\"안\")\n"
                 "- 일반적인 장소 인식: \"냉장고\", \"서랍\", \"책상\", \"옷장\", \"화장대\", \"침대\", \"소파\", \"식탁\", \"테이블\", \"선반\", \"수납장\", \"서재\", \"발코니\" 등도 장소로 인식하세요!\n"
                 "- 장소는 방 이름뿐만 아니라 가구나 시설물 이름도 포함됩니다 (예: \"냉장고\", \"책상\", \"서랍\" 등)\n\n"
                 "**일정 추출 강화 (중요!):**\n"
@@ -1321,15 +1529,13 @@ class LifeAssistMemory:
                             
 
                             if direction_found:
-
-
-
                                 place = location_without_direction
-                                sub_location = direction_found
+                                # "위에" → "위", "안에" → "안" 등 조사 "에" 제거
+                                sub_location = direction_found[:-1] if direction_found.endswith("에") else direction_found
                             elif location.endswith("에"):
-
+                                # "에"는 단순 조사이므로 세부위치로 저장하지 않음
                                 place = location[:-1].strip()
-                                sub_location = "에"
+                                sub_location = ""
                             else:
 
 

@@ -237,13 +237,24 @@ class UserExcelManager:
                 norm["물건이름"] = data.get("물건이름") or data.get("이름", "")
 
                 norm["장소"] = str(data.get("장소", "")).strip()
-                norm["세부위치"] = str(data.get("세부위치", "")).strip()
+                # 세부위치에서 조사 "에" 제거 (위에→위, 안에→안, 옆에→옆 등)
+                raw_sub = str(data.get("세부위치", "")).strip()
+                if raw_sub == "에":
+                    norm["세부위치"] = ""
+                elif raw_sub.endswith("에") and len(raw_sub) > 1:
+                    norm["세부위치"] = raw_sub[:-1]  # "위에"→"위", "안에"→"안"
+                else:
+                    norm["세부위치"] = raw_sub
 
                 if not norm["장소"] and not norm["세부위치"]:
                     location = str(data.get("위치", "")).strip()
                     if location:
 
                         import re
+
+                        # 조사만 세부위치로 들어온 경우 제거
+                        if norm.get("세부위치") in ("에", ""):
+                            norm["세부위치"] = ""
 
                         if "내 방" in location or "내방" in location:
 

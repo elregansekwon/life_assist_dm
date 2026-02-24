@@ -1511,9 +1511,19 @@ def handle_query_with_lcel(user_input: str, memory_instance, session_id: str) ->
     4. fallback
     """
     import re
+    from datetime import datetime as _dt
     try:
 
         text = (user_input or "").strip()
+
+        # 날짜/시간 질문은 룰 기반으로 즉시 처리
+        if re.search(r"(오늘|현재|지금).*(날짜|며칠|몇\s*일|요일)", text):
+            now = _dt.now()
+            weekday_ko = ["월요일","화요일","수요일","목요일","금요일","토요일","일요일"][now.weekday()]
+            return f"오늘은 {now.strftime('%Y년 %m월 %d일')} {weekday_ko}입니다."
+        if re.search(r"(지금|현재|오늘).*(시간|몇\s*시)", text):
+            return f"지금 시간은 {_dt.now().strftime('%H시 %M분')}입니다."
+
         from life_assist_dm.dialog_manager.config.config_loader import (
             get_personal_info_config,
             get_excel_sheets,
@@ -2166,6 +2176,16 @@ def handle_cognitive_task_with_lcel(user_input: str, memory_instance, session_id
         )
         if q_trigger:
             return handle_query_with_lcel(user_input, memory_instance, session_id)
+
+        # 물건 위치 알려주기 + 가져오기/찾기 명령이 같이 오면 physical로 처리
+        physical_trigger = any(k in text_norm for k in ["가져와", "가져다", "가져오", "갖다줘", "찾아줘", "정리해"])
+        location_trigger = any(k in text_norm for k in ["에 있어", "에 있다", "에 있음", "에 보관", "에 놓여"])
+        if physical_trigger and location_trigger:
+            import life_assist_dm.support_chains as _sc
+            _phys_result = _sc.handle_physical_task(user_input, memory_instance, session_id)
+            if isinstance(_phys_result, dict):
+                return _phys_result  # robot_command 포함한 dict 그대로 반환
+            return _phys_result
 
         emotion_saved = False
         medicine_saved = False

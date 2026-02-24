@@ -75,7 +75,10 @@ class DialogManager(Node):
     def __init__(self):
         super().__init__('dialog_manager')
         header = DialogManagerHeader(self)
+
+
         self.cfg = header.cfg
+        self.get_logger().info(f"cfg: {self.cfg}")
 
         # 사용자 이름 확인 상태 추적
         self.user_name_status = {}  # {session_id: "unknown" | "asking" | "confirmed"}
@@ -373,6 +376,7 @@ class DialogManager(Node):
             answer_parts = []
             processed_physical = False
             emotion_saved_in_this_turn = False
+            robot_command_str = ""
 
             for act_type in act_types:
 
@@ -390,7 +394,12 @@ class DialogManager(Node):
 
                     if isinstance(answer, dict):
                         answer_parts.append(answer.get('message', str(answer)))
-
+                        # cognitive → physical 위임 결과에서 robot_command 추출
+                        rc = answer.get('robot_command')
+                        if rc:
+                            import json as _json
+                            robot_command_str = _json.dumps(rc, ensure_ascii=False) if isinstance(rc, dict) else str(rc)
+                            self.get_logger().info(f"[ROBOT COMMAND] {robot_command_str}")
                         if any(keyword in user_text for keyword in ["가져", "갖다", "와", "찾아", "정리", "꺼내"]):
                             processed_physical = True
                     else:
@@ -414,8 +423,15 @@ class DialogManager(Node):
 
                         if isinstance(physical_result, dict):
                             answer_parts.append(physical_result.get('message', str(physical_result)))
+                            # robot_command 추출해서 저장
+                            rc = physical_result.get('robot_command')
+                            if rc:
+                                import json as _json
+                                robot_command_str = _json.dumps(rc, ensure_ascii=False)
+                                self.get_logger().info(f"[ROBOT COMMAND] {robot_command_str}")
                         else:
                             answer_parts.append(str(physical_result))
+                            robot_command_str = ""
                     except Exception as e:
                         import traceback
                         tb = traceback.format_exc()
@@ -471,7 +487,12 @@ class DialogManager(Node):
             safe_answer = _filter_safety_apology(safe_answer)
             safe_answer = safe_answer.replace('"', '＂').replace("'", "＇")
             response.answer = safe_answer
-            response.act_type = ",".join(act_types)
+            response.robot_command = robot_command_str
+            # robot_command가 있으면 act_type을 physical로 덮어쓰기
+            if robot_command_str:
+                response.act_type = "physical"
+            else:
+                response.act_type = ",".join(act_types)
 
             self.get_logger().info(f"[RESPONSE] 최종 응답: {response.answer}")
 
