@@ -1,6 +1,7 @@
 from langchain_openai import ChatOpenAI
 from langchain.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+import os
 
 import logging as std_logging
 std_logging.getLogger("httpx").setLevel(std_logging.WARNING)
@@ -9,6 +10,15 @@ std_logging.getLogger("httpcore").setLevel(std_logging.WARNING)
 
 class LifeAssistant:
     def __init__(self, model_name="gpt-4o-mini-2024-07-18"):
+        # API 키 확인
+        if not os.getenv("OPENAI_API_KEY"):
+            raise ValueError(
+                "OPENAI_API_KEY 환경변수가 설정되지 않았습니다.\n"
+                "다음 중 하나의 방법으로 설정해주세요:\n"
+                "1) export OPENAI_API_KEY=\"your-key\" (일회성)\n"
+                "2) echo 'export OPENAI_API_KEY=\"your-key\"' >> ~/.bashrc && source ~/.bashrc (영구적)\n"
+                "3) .env 파일 생성 (패키지 루트 또는 llm 디렉토리)"
+            )
         self.llm = ChatOpenAI(
             model=model_name,
             temperature=0.4,
@@ -45,6 +55,15 @@ class LifeAssistant:
 
 class SentenceCorrector:
     def __init__(self, model_name="gpt-4o-mini-2024-07-18"):
+        # API 키 확인
+        if not os.getenv("OPENAI_API_KEY"):
+            raise ValueError(
+                "OPENAI_API_KEY 환경변수가 설정되지 않았습니다.\n"
+                "다음 중 하나의 방법으로 설정해주세요:\n"
+                "1) export OPENAI_API_KEY=\"your-key\" (일회성)\n"
+                "2) echo 'export OPENAI_API_KEY=\"your-key\"' >> ~/.bashrc && source ~/.bashrc (영구적)\n"
+                "3) .env 파일 생성 (패키지 루트 또는 llm 디렉토리)"
+            )
         self.llm = ChatOpenAI(
             model=model_name,
             timeout=10.0,
@@ -71,6 +90,15 @@ class SentenceCorrector:
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
 def get_llm(model_name: str = "gpt-4o-mini-2024-07-18"):
+    # API 키 확인
+    if not os.getenv("OPENAI_API_KEY"):
+        raise ValueError(
+            "OPENAI_API_KEY 환경변수가 설정되지 않았습니다.\n"
+            "다음 중 하나의 방법으로 설정해주세요:\n"
+            "1) export OPENAI_API_KEY=\"your-key\" (일회성)\n"
+            "2) echo 'export OPENAI_API_KEY=\"your-key\"' >> ~/.bashrc && source ~/.bashrc (영구적)\n"
+            "3) .env 파일 생성 (패키지 루트 또는 llm 디렉토리)"
+        )
     return ChatOpenAI(
         model=model_name, 
         temperature=0.4,

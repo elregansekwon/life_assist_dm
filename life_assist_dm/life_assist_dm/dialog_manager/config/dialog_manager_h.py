@@ -53,10 +53,5 @@ class DialogManagerHeader:
     def set_param(self):
         self.cfg.dm.service_list = self.node.declare_parameter('service_list', ['memory', 'emotion', 'physical']).get_parameter_value().string_array_value
         self.cfg.dm.gpt_model = self.node.declare_parameter('gpt_model', 'gpt-4o-mini-2024-07-18').get_parameter_value().string_value
-        self.cfg.dm.user_config = self.node.declare_parameter('user_config', 'user1.csv').get_parameter_value().string_value
-
-        self.load_user_csv()
-
-    def load_user_csv(self):
-        pass
+        self.cfg.dm.user_config = self.node.declare_parameter('user_config', '권서연.xlsx').get_parameter_value().string_value
 
