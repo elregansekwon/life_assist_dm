@@ -55,6 +55,7 @@ def generate_launch_description():
                     'service_list': ['cognitive', 'emotional', 'physical'],
                     'gpt_model': 'gpt-4o-mini-2024-07-18',
                     'user_config': 'user1.csv',
+                    'preset_user_name': '권서연',  # 미리 지정된 사용자 이름 (있으면 이름 묻는 단계 건너뜀)
         }]
     )
 

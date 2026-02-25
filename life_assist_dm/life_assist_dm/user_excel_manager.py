@@ -238,6 +238,12 @@ class UserExcelManager:
 
                 norm["장소"] = str(data.get("장소", "")).strip()
                 norm["세부위치"] = str(data.get("세부위치", "")).strip()
+                
+                # 세부위치에서 조사 제거 (예: "위에" → "위", "앞에서" → "앞")
+                if norm["세부위치"]:
+                    import re
+                    # 끝에 오는 조사 제거: 에, 에서, 로, 으로, 의, 와, 과 등
+                    norm["세부위치"] = re.sub(r'(에|에서|로|으로|의|와|과|까지|부터|만|도|조차|마저|부터|까지)$', '', norm["세부위치"]).strip()
 
                 if not norm["장소"] and not norm["세부위치"]:
                     location = str(data.get("위치", "")).strip()
@@ -268,6 +274,11 @@ class UserExcelManager:
                         if not norm["장소"]:
 
                             norm["세부위치"] = location
+                        
+                        # location 파싱 후에도 세부위치에서 조사 제거
+                        if norm["세부위치"]:
+                            import re
+                            norm["세부위치"] = re.sub(r'(에|에서|로|으로|의|와|과|까지|부터|만|도|조차|마저|부터|까지)$', '', norm["세부위치"]).strip()
 
                 norm["출처"] = data.get("출처") or data.get("추출방법", "사용자 발화")
 
@@ -645,6 +656,32 @@ class UserExcelManager:
                     df_all = pd.concat([df_existing, df_new], ignore_index=True)
                 else:
                     df_all = df_new
+
+                if sheet_name == "물건위치" and not df_all.empty:
+                    try:
+                        # 동일 물건에 대해 가장 최신 위치만 유지
+                        # - 동일 물건 + 다른 위치: 기존 행 삭제, 새 행으로 덮어쓰기
+                        # - 동일 물건 + 동일 위치: 중복 제거 (keep last)
+                        if "물건이름" in df_all.columns:
+                            for col in ["물건이름", "장소", "세부위치"]:
+                                if col in df_all.columns:
+                                    df_all[col] = df_all[col].fillna("").astype(str).str.strip()
+
+                            # 날짜 컬럼이 있으면 datetime으로 변환 후 정렬
+                            if "날짜" in df_all.columns:
+                                df_all["날짜"] = pd.to_datetime(df_all["날짜"], errors="coerce")
+                                df_all = df_all.sort_values("날짜", na_position="last")
+                            else:
+                                logger.debug("[DUPLICATE CHECK] '날짜' 컬럼 없음 → 정렬 없이 중복 제거 수행")
+
+                            # 동일 물건이름 기준으로 마지막(최신) 행만 남김
+                            df_all = df_all.drop_duplicates(subset=["물건이름"], keep="last")
+
+                            logger.debug(f"[DUPLICATE CHECK] 물건위치 중복 제거 후: {len(df_all)}개 레코드")
+                    except Exception as e:
+                        logger.warning(f"[FLUSH WARN] 물건위치 중복 제거 실패: {e}")
+                        import traceback
+                        logger.debug(traceback.format_exc())
 
                 if sheet_name == "복약정보" and not df_all.empty:
                     try:

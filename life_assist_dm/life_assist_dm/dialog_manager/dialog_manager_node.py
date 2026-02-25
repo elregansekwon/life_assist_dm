@@ -89,6 +89,28 @@ class DialogManager(Node):
         self.last_conversation_time = {}  # {session_id: timestamp}
         self.session_timeout = 180  # 3분 = 180초
 
+        # ✅ launch 파라미터에서 preset_user_name 읽어 자동 로드
+        self.declare_parameter('preset_user_name', '')
+        preset_user_name = self.get_parameter('preset_user_name').get_parameter_value().string_value.strip()
+        if preset_user_name:
+            session_id = "default_session"
+            # session_id 불일치 방지: "default_session"과 "default" 둘 다 설정
+            self.memory.user_names[session_id] = preset_user_name
+            self.memory.user_names["default"] = preset_user_name  # handle_duplicate_answer 등에서 "default" 사용
+            self.user_name_status[session_id] = "confirmed"
+            self.user_name_status["default"] = "confirmed"
+            excel_manager = self.memory.excel_manager
+            if not excel_manager.user_exists(preset_user_name):
+                self.get_logger().info(f"[PRESET USER] 새 사용자 - 엑셀 파일 생성: {preset_user_name}")
+                excel_manager.initialize_user_excel(preset_user_name)
+            else:
+                self.get_logger().info(f"[PRESET USER] 기존 사용자 - 엑셀 데이터 로딩: {preset_user_name}")
+                try:
+                    self.memory.load_user_data_from_excel(preset_user_name, session_id)
+                except Exception as e:
+                    self.get_logger().warning(f"[PRESET USER] 엑셀 데이터 로딩 실패: {e}")
+            self.get_logger().info(f"[PRESET USER] 사용자 자동 설정 완료: {preset_user_name}")
+
         self.conversation_service = self.create_service(Conversation,   
                                                         'conversation',
                                                         self.handle_conversation)   
@@ -195,6 +217,9 @@ class DialogManager(Node):
             user_name = self.memory.user_names.get(session_id)
             self.get_logger().info(f"[NAME CHECK] 사용자 이름 상태: {user_name}")
             
+            # ℹ️ preset_user_name이 있으면 __init__에서 이미 user_names에 세팅되므로
+            # 아래 "if not user_name:" 조건을 자연스럽게 통과함 (질문 로직 진입 안 함)
+            # preset_user_name이 없거나 비어있을 경우 아래 기존 로직이 그대로 동작함
             if not user_name:
 
                 self.get_logger().info(f"[NAME REQUEST] 사용자 이름 없음 - 분류 건너뛰기")
@@ -387,7 +412,19 @@ class DialogManager(Node):
                         self.get_logger().info(f"[PHYSICAL RESULT] {physical_result}")
 
                         if isinstance(physical_result, dict):
-                            answer_parts.append(physical_result.get('message', str(physical_result)))
+                            message = physical_result.get('message', str(physical_result))
+                            robot_cmd = physical_result.get('robot_command')
+                            
+                            # robot_command가 있으면 영어 명령을 메시지에 추가
+                            if robot_cmd:
+                                import json
+                                try:
+                                    cmd_str = json.dumps(robot_cmd, ensure_ascii=False)
+                                    message = f"{message} [Robot Command: {cmd_str}]"
+                                except Exception:
+                                    message = f"{message} [Robot Command: {str(robot_cmd)}]"
+                            
+                            answer_parts.append(message)
                         else:
                             answer_parts.append(str(physical_result))
                     except Exception as e:

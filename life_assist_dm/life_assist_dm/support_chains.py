@@ -926,11 +926,16 @@ def handle_physical_task(user_input: str, memory_instance, session_id: str, enti
                             sub_location = ''
 
                         if place and sub_location:
-                            location_msg = f"{place} {sub_location}"
+                            # sub_location에서 조사 제거 (이미 저장 시 제거되었지만 안전을 위해)
+                            import re
+                            sub_loc_clean = re.sub(r'(에|에서|로|으로|의|와|과|까지|부터|만|도|조차|마저)$', '', sub_location).strip()
+                            location_msg = f"{place} {sub_loc_clean}"
                         elif place:
                             location_msg = place
                         elif sub_location:
-                            location_msg = sub_location
+                            # sub_location에서 조사 제거
+                            import re
+                            location_msg = re.sub(r'(에|에서|로|으로|의|와|과|까지|부터|만|도|조차|마저)$', '', sub_location).strip()
                         else:
                             location_msg = str(saved_location) if saved_location else ""
                     else:
@@ -938,7 +943,11 @@ def handle_physical_task(user_input: str, memory_instance, session_id: str, enti
 
                         if location_msg.lower() in ['nan', 'none']:
                             location_msg = ""
-                    msg = f"{target}을(를) {location_msg}에서 가져오겠습니다."
+                    # location_msg가 비어있지 않으면 "에서" 추가
+                    if location_msg:
+                        msg = f"{target}을(를) {location_msg}에서 가져오겠습니다."
+                    else:
+                        msg = f"{target}을(를) 가져오겠습니다."
                     robot_cmd = to_task_command_en("deliver", target, saved_location, memory_instance)
                     return {"success": True, "message": msg, "robot_command": robot_cmd}
                 else:
@@ -1617,6 +1626,11 @@ def handle_query_with_lcel(user_input: str, memory_instance, session_id: str) ->
             except Exception:
                 pass
 
+            # preset_user_name이나 user_names에서 이름이 있으면 context_map에 추가
+            if "이름" not in context_map or not context_map.get("이름"):
+                if user_name and user_name != "사용자":
+                    context_map["이름"] = user_name
+
             try:
                 from life_assist_dm.llm.gpt_utils import get_llm
                 llm = get_llm()
@@ -2158,6 +2172,8 @@ def handle_cognitive_task_with_lcel(user_input: str, memory_instance, session_id
     5. fallback
     """
     try:
+        # re 모듈이 로컬 변수로 덮어씌워지는 것을 방지하기 위해 함수 시작 부분에서 import
+        import re
         text_norm = (user_input or "").strip()
         q_trigger = (
             text_norm.endswith("?") or
@@ -2475,12 +2491,16 @@ def handle_cognitive_task_with_lcel(user_input: str, memory_instance, session_id
                                     "세부위치": sub_location,
                                     "추출방법": entity.get("추출방법", "rule-based")  
                                 })
-                                if place and sub_location:
-                                    location_msg = f"{place} {sub_location}"
+                                # 메시지 생성 시 세부위치에서 조사 제거
+                                import re
+                                sub_loc_clean = re.sub(r'(에|에서|로|으로|의|와|과|까지|부터|만|도|조차|마저)$', '', sub_location).strip() if sub_location else ""
+                                
+                                if place and sub_loc_clean:
+                                    location_msg = f"{place} {sub_loc_clean}"
                                 elif place:
                                     location_msg = place
-                                elif sub_location:
-                                    location_msg = sub_location
+                                elif sub_loc_clean:
+                                    location_msg = sub_loc_clean
                                 else:
                                     location_msg = location
                                 results.append(f"'{name}'의 위치를 '{location_msg}'로 저장했어요.")

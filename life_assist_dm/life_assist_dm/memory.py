@@ -350,6 +350,22 @@ class LifeAssistMemory:
 
     
 
+    def load_user_data_from_excel(self, user_name: str, session_id: str):
+        """
+        사용자 엑셀 데이터를 메모리에 로드 (호환성을 위한 빈 메서드)
+        
+        실제로는 엑셀 데이터는 필요할 때마다 get_excel_data()나 
+        excel_manager.load_sheet_data()를 통해 자동으로 로드되므로
+        별도의 사전 로딩이 필요하지 않습니다.
+        
+        Args:
+            user_name: 사용자 이름
+            session_id: 세션 ID
+        """
+        # 엑셀 데이터는 필요할 때마다 자동으로 로드되므로 빈 메서드로 처리
+        # 실제 로딩은 get_excel_data() 등에서 필요 시 수행됨
+        pass
+    
     def get_excel_data(self, session_id: str, sheet_name: str) -> List[dict]:
         """
         엑셀 시트 데이터를 딕셔너리 리스트로 반환
@@ -2186,7 +2202,7 @@ class LifeAssistMemory:
                     title_part = groups[1] if len(groups) > 1 else ""
                     time_part = ""
 
-                elif "로\s*했어|로\s*했어요|만나기로\s*했어|만나기로\s*했어요" in pattern:
+                elif r"로\s*했어|로\s*했어요|만나기로\s*했어|만나기로\s*했어요" in pattern:
                     date_part = groups[0] if len(groups) > 0 else ""
                     time_part = f"{groups[1]} {groups[2]}" if len(groups) > 2 and groups[1] and groups[2] else ""
                     title_part = groups[3] if len(groups) > 3 else ""
