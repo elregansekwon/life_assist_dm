@@ -1408,42 +1408,78 @@ class LifeAssistMemory:
         return prompt | self.llm | parser
 
     def _extract_item_location_rule(self, user_input: str) -> Dict[str, List[Dict[str, Any]]]:
-        """물건 위치 추출 (Rule-based 우선 처리)"""
+        """물건 위치 추출 (Rule-based 우선 처리)
+
+        - 물건 먼저, 장소 나중: "충전기는 침대 밑에 있어"
+        - 장소 먼저, 물건 나중: "침대 밑에 충전기 있어"
+        둘 다 인식되도록 패턴과 후처리를 구성한다.
+        """
         out: Dict[str, List[Dict[str, Any]]] = {}
         t = user_input.strip()
-        
+
         # 문장을 쉼표로 분리하여 각각 처리
         sentences = [s.strip() for s in t.split(',') if s.strip()]
-        
+
         for sentence in sentences:
             # 물건 위치 패턴들 (다양한 표현 지원)
             location_patterns = [
+                # 1) 장소 먼저, 물건 나중: "침대 밑에 충전기 있어"
+                r"(.+?)\s*(?:에|위에|안에|밖에|옆에|앞에|뒤에|아래에)\s*(.+?)\s*(?:이|가)?\s*(?:있어|있고|있어요|있습니다)",
+                # 2) 물건은 위치에 있다: "충전기는 침대 밑에 있어"
                 r"(.+?)\s*(?:은|는)\s*(.+?에|위에|안에|밖에|옆에|앞에|뒤에|아래에)\s*(?:있|둬|놔|두|놓|보관)",
+                # 3) 위치에서 있다/두다: "충전기 침대 밑에 두었어"
                 r"(.+?)\s*(.+?에|위에|안에|밖에|옆에|앞에|뒤에|아래에)\s*(?:에|에서)\s*(?:있|둬|놔|두|놓|보관)",
+                # 4) 물건을 위치에 두었다: "충전기를 침대 밑에 두었어"
                 r"(.+?)\s*(?:을|를)\s*(.+?에|위에|안에|밖에|옆에|앞에|뒤에|아래에)\s*(?:두었|놓았|보관했)",
-                # 추가 패턴: "물건은 위치에 있고"
+                # 5) "물건은 위치에 있고/있어"
                 r"(.+?)\s*(?:은|는)\s*(.+?에|위에|안에|밖에|옆에|앞에|뒤에|아래에)\s*(?:있고|있어)",
-                # 추가 패턴: "물건은 위치에 있고" (더 간단한 버전)
+                # 6) 단순 버전: "물건은 위치에 있어"
                 r"(.+?)\s*(?:은|는)\s*(.+?에)\s*(?:있고|있어)",
             ]
-            
+
             for pattern in location_patterns:
                 m = re.search(pattern, sentence)
-                if m:
-                    item = re.sub(r"^(내|네|이|그)\s*", "", m.group(1).strip())
-                    location = m.group(2).strip()
-                    
-                    # 유효한 물건명과 위치인지 확인
-                    if (item and location and 
-                        len(item) >= 1 and len(location) >= 2 and
-                        item not in ["것", "거", "이것", "그것", "저것"]):
-                        out.setdefault("user.물건", []).append({
-                            "이름": item,
-                            "위치": location,
-                            "추출방법": "rule-based"
-                        })
-                        break  # 첫 번째 매치만 사용
-        
+                if not m:
+                    continue
+
+                groups = m.groups()
+                if len(groups) < 2:
+                    continue
+
+                g1, g2 = groups[0].strip(), groups[1].strip()
+
+                # 어느 쪽이 '위치'이고 어느 쪽이 '물건'인지 판단
+                location_keywords = [
+                    "에", "위에", "안에", "밖에", "옆에", "앞에", "뒤에", "아래에",
+                    "주방", "거실", "침실", "찬장", "서랍", "책상", "방", "침대"
+                ]
+
+                if any(kw in g2 for kw in location_keywords):
+                    # g2가 위치 쪽일 가능성이 높음: "충전기는 침대 밑에 있어"
+                    item = re.sub(r"^(내|네|이|그)\s*", "", g1)
+                    location = g2
+                elif any(kw in g1 for kw in location_keywords):
+                    # g1이 위치 쪽일 가능성이 높음: "침대 밑에 충전기 있어"
+                    location = g1
+                    item = re.sub(r"^(내|네|이|그)\s*", "", g2)
+                else:
+                    # 키워드로 구분 안 되면 기본적으로 g1을 물건, g2를 위치로 간주
+                    item = re.sub(r"^(내|네|이|그)\s*", "", g1)
+                    location = g2
+
+                # 유효한 물건명과 위치인지 확인
+                if (
+                    item and location and
+                    len(item) >= 1 and len(location) >= 2 and
+                    item not in ["것", "거", "이것", "그것", "저것"]
+                ):
+                    out.setdefault("user.물건", []).append({
+                        "이름": item,
+                        "위치": location,
+                        "추출방법": "rule-based"
+                    })
+                    break  # 한 문장당 첫 번째 매치만 사용
+
         return out
 
     def _extract_item_command_rule(self, user_input: str) -> Dict[str, List[Dict[str, Any]]]:

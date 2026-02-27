@@ -96,7 +96,10 @@ def classify_hybrid(text: str) -> ClassificationResult:
     emotional_score = _score(EMOTIONAL_PATTERNS, text) if preference_score == 0 else 0
     physical_score = _score(PHYSICAL_PATTERNS, text)
     query_score = _score(QUERY_PATTERNS, text)
-    
+    # "어디 있는지 몰라?" 등 위치 질문은 physical(deliver)가 아닌 query로 분류
+    if re.search(r"어디\s*있.*(몰라|모르|알려|알려줘)", text) or re.search(r"(몰라|모르).*어디", text):
+        physical_score = max(0, physical_score - 2)
+        query_score = query_score + 2
     if preference_score == 0:
         try:
             from life_assist_dm.support_chains import (

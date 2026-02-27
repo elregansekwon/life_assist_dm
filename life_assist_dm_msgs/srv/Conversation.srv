@@ -5,3 +5,4 @@ string ask
 bool success
 string answer
 string act_type
+string robot_command  # 로봇 전달용 영어 명령 (JSON 또는 plain). 없으면 빈 문자열

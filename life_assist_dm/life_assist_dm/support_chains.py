@@ -259,6 +259,13 @@ def _extract_date(text: str) -> str | None:
         return "오늘"
     if "모레" in t:
         return "모레"
+
+    # 요일만 언급된 경우 (예: "금요일 일정 알려줘") → 요일 그대로 반환
+    weekdays = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
+    for wd in weekdays:
+        if wd in t:
+            return wd
+
     return None
 
 EMOTION_POSITIVE_WORDS = ["행복", "좋아", "기뻐", "즐거", "신나", "만족", "뿌듯", "기쁘", "웃음", "즐겁"]
@@ -561,11 +568,12 @@ def build_emotional_reply(text: str, llm=None, user_name_confirmed=False) -> str
             response = llm.invoke(prompt)
 
             if hasattr(response, "content"):
-                return response.content.strip()
+                out = (response.content or "").strip()
+                return out or "해당 정보를 찾지 못했어요."
             elif isinstance(response, str):
-                return response.strip()
+                return response.strip() or "해당 정보를 찾지 못했어요."
             else:
-                return str(response).strip()
+                return str(response).strip() or "해당 정보를 찾지 못했어요."
         except Exception as e:
             print(f"[WARN] 감정 대화 LLM 호출 실패: {e}")
 
@@ -623,7 +631,7 @@ def to_task_command_en(action: str, target: str, location: str = None, memory_in
 
     action_map = {
         "find": "find",
-        "deliver": "deliver",
+        "deliver": "give_me",
         "organize": "organize"
     }
 
@@ -713,12 +721,12 @@ def to_task_command_en(action: str, target: str, location: str = None, memory_in
             "target": target_en,
             "original": f"Please find {target_en}"
         }
-    elif action_en == "deliver":
+    elif action_en == "give_me":
         cmd = {
-            "action": "deliver",
+            "action": "give_me",
             "target": target_en,
             "location": loc_en,
-            "original": f"Please deliver {target_en}" + (f" from {loc_en}" if loc_en else "")
+            "original": f"Give me {target_en}" + (f" from {loc_en}" if loc_en else "")
         }
     elif action_en == "organize":
         cmd = {
@@ -781,6 +789,31 @@ def handle_physical_task(user_input: str, memory_instance, session_id: str, enti
             location = state["last_location"]
 
         logger.debug(f"[PHYSICAL] Extracted - target={target}, location={location}")
+
+        # ✅ LLM이 "컵"만 추출했을 때: 발화·물건위치 시트 기준으로 더 구체적인 이름으로 보정 (예: "빨간 컵")
+        if target:
+            try:
+                user_name_refine = memory_instance.user_names.get(session_id or "default_session")
+                if user_name_refine:
+                    df_refine = memory_instance.excel_manager.safe_load_sheet(user_name_refine, "물건위치")
+                    if df_refine is not None and not df_refine.empty:
+                        raw_input = (user_input or "").strip()
+                        input_ns = raw_input.replace(" ", "")
+                        candidates = []
+                        for _, row in df_refine.iterrows():
+                            name = str(row.get("물건이름", "") or row.get("이름", "")).strip()
+                            if not name:
+                                continue
+                            name_ns = name.replace(" ", "")
+                            if name_ns in input_ns:
+                                candidates.append((name, len(name_ns)))
+                        if candidates:
+                            best_name = max(candidates, key=lambda x: x[1])[0]
+                            if len(best_name.replace(" ", "")) >= len((target or "").replace(" ", "")):
+                                target = best_name
+                                logger.debug(f"[PHYSICAL] target 보정: {target}")
+            except Exception as e:
+                logger.debug(f"[PHYSICAL] target 보정 실패: {e}")
 
         if not target:
             logger.warning(f"[PHYSICAL] No target extracted from: {text}")
@@ -897,12 +930,232 @@ def handle_physical_task(user_input: str, memory_instance, session_id: str, enti
                 else:
                     logger.debug(f"[PHYSICAL+COGNITIVE] 엔티티가 이미 저장되었으므로 중복 저장 건너뜀")
 
-                msg = f"'{target}'를 '{location}'에서 가져오겠습니다."
+                msg = f"{target}을(를) {location}에서 가져오겠습니다."
                 robot_cmd = to_task_command_en("deliver", target, location, memory_instance)
                 logger.debug(f"[PHYSICAL RESULT] message={msg}, robot_command={robot_cmd}")
                 return {"success": True, "message": msg, "robot_command": robot_cmd}
             else:
+                # ✅ 문장 안에 등장하는 여러 물건을 동시에 탐지 (예: "물이랑 빨간 컵 갖다줘")
+                items_in_text = []
+                try:
+                    session_id_default = session_id or "default_session"
+                    user_name_multi = memory_instance.user_names.get(session_id_default)
+                    if user_name_multi:
+                        df_items = memory_instance.excel_manager.safe_load_sheet(user_name_multi, "물건위치")
+                        if df_items is not None and not df_items.empty:
+                            text_ns = (user_input or "").replace(" ", "")
+                            candidates = []
+                            for _, row in df_items.iloc[::-1].iterrows():
+                                name = str(row.get("물건이름", "") or row.get("이름", "")).strip()
+                                if not name:
+                                    continue
+                                name_ns = name.replace(" ", "")
+                                if not name_ns:
+                                    continue
+                                # 발화 안에 공백 제거 이름이 포함되면 해당 물건을 후보에 추가
+                                if name_ns in text_ns:
+                                    item_info = {
+                                        "이름": name,
+                                        "위치": str(row.get("위치", "") or "").strip(),
+                                        "장소": str(row.get("장소", "") or "").strip(),
+                                        "세부위치": str(row.get("세부위치", "") or "").strip(),
+                                    }
+                                    candidates.append((name_ns, item_info))
 
+                            # 공백 제거 이름 기준으로, 더 긴 이름을 우선하여 중복/포함 관계 정리
+                            # 단, "살로몬 신발이랑 신발 가져와"처럼 짧은 이름("신발")이
+                            # 다른 물건과 '이랑/랑/하고/와/과'로 묶여 있을 때만 별도 항목으로 유지
+                            raw_input = (user_input or "").strip()
+                            def _name_standalone_in_text(name_str: str, text: str) -> bool:
+                                if not name_str or not text:
+                                    return False
+                                esc = re.escape(name_str)
+                                # 예: "A랑 신발 가져와", "A하고 신발 가져와", "A와 신발 가져와"
+                                return bool(re.search(r"(이랑|랑|하고|와|과)\s*" + esc + r"(?:\s|$|이랑|가져|갖다|가지고)", text))
+
+                            candidates.sort(key=lambda x: len(x[0]), reverse=True)
+                            seen_ns = set()
+                            for name_ns, item_info in candidates:
+                                contained = any(name_ns in existing for existing in seen_ns)
+                                if contained and not _name_standalone_in_text(item_info.get("이름", ""), raw_input):
+                                    continue
+                                seen_ns.add(name_ns)
+                                items_in_text.append(item_info)
+                except Exception as e:
+                    logger.debug(f"[PHYSICAL] multi-item 탐지 실패: {e}")
+
+                # ✅ 두 개 이상이 명확히 발견되면, 여러 개를 순차 배달하는 명령으로 처리
+                if len(items_in_text) >= 2:
+                    msg_items = []
+                    robot_items = []
+                    for item in items_in_text:
+                        name = item.get("이름", "")
+                        loc_raw = item.get("위치", "") or item.get("장소", "") or item.get("세부위치", "")
+                        place = item.get("장소", "").strip()
+                        sub_location = item.get("세부위치", "").strip()
+
+                        if place.lower() in ['nan', 'none', '']:
+                            place = ''
+                        if sub_location.lower() in ['nan', 'none', '']:
+                            sub_location = ''
+
+                        import re
+                        if place and sub_location:
+                            sub_loc_clean = re.sub(r'(에|에서|로|으로|의|와|과|까지|부터|만|도|조차|마저)$', '', sub_location).strip()
+                            location_msg = f"{place} {sub_loc_clean}"
+                        elif place:
+                            location_msg = place
+                        elif sub_location:
+                            location_msg = re.sub(r'(에|에서|로|으로|의|와|과|까지|부터|만|도|조차|마저)$', '', sub_location).strip()
+                        else:
+                            location_msg = (loc_raw or "").strip()
+
+                        if location_msg.lower() in ['nan', 'none']:
+                            location_msg = ""
+
+                        josa_obj = josa(name, ("을", "를"))
+                        if location_msg:
+                            msg_items.append(f"{name}{josa_obj} {location_msg}에서")
+                        else:
+                            msg_items.append(f"{name}{josa_obj}")
+
+                        robot_items.append({
+                            "target": name,
+                            "location": location_msg or loc_raw or "",
+                        })
+
+                    msg_list = ", ".join(msg_items)
+                    msg = f"{msg_list} 가져오겠습니다."
+                    targets_en = ", ".join([it["target"] for it in robot_items])
+                    if len(robot_items) == 2:
+                        original_txt = f"Give me {robot_items[0]['target']} and {robot_items[1]['target']}"
+                    elif len(robot_items) > 2:
+                        original_txt = "Give me " + ", ".join([it["target"] for it in robot_items[:-1]]) + f" and {robot_items[-1]['target']}"
+                    else:
+                        original_txt = f"Give me {targets_en}"
+                    robot_cmd = {
+                        "action": "give_me",
+                        "items": robot_items,
+                        "original": original_txt
+                    }
+                    logger.debug(f"[PHYSICAL] 다중 물건 발견 - 순차 배달: {robot_items}")
+                    return {"success": True, "message": msg, "robot_command": robot_cmd}
+
+                # ✅ 여러 개의 물건이 있는지 (이름 기준) 확인하여 단일 대상 모호성 처리
+                multiple_items = []
+                try:
+                    if hasattr(memory_instance, 'get_all_items_by_name') and target:
+                        multiple_items = memory_instance.get_all_items_by_name(target, partial_match=True)
+                except Exception as e:
+                    logger.debug(f"[PHYSICAL] get_all_items_by_name 실패: {e}")
+
+                # ✅ 여러 개의 물건이 발견되면 재확인 질문
+                if len(multiple_items) > 1:
+                    # ✅ 사용자 발화에서 더 구체적인 물건 이름이 있는지 확인
+                    # 예: "빨간 컵 가져와" → user_input에 "빨간 컵"이 포함되어 있으면 바로 처리
+                    best_match = None
+                    best_match_length = 0
+                    
+                    for item in multiple_items:
+                        item_name = item.get("이름", "").strip()
+                        if item_name and item_name in user_input:
+                            # 사용자 발화에 포함된 물건 중 가장 긴 이름(가장 구체적인 것) 선택
+                            if len(item_name) > best_match_length:
+                                best_match = item
+                                best_match_length = len(item_name)
+                    
+                    # ✅ 구체적인 물건이 사용자 발화에 포함되어 있으면 바로 처리
+                    if best_match and best_match_length > len(target):
+                        selected_name = best_match.get("이름", "")
+                        location = best_match.get("위치", "") or best_match.get("장소", "") or best_match.get("세부위치", "")
+                        place = best_match.get("장소", "").strip()
+                        sub_location = best_match.get("세부위치", "").strip()
+                        
+                        if place.lower() in ['nan', 'none', '']:
+                            place = ''
+                        if sub_location.lower() in ['nan', 'none', '']:
+                            sub_location = ''
+                        
+                        if place and sub_location:
+                            import re
+                            sub_loc_clean = re.sub(r'(에|에서|로|으로|의|와|과|까지|부터|만|도|조차|마저)$', '', sub_location).strip()
+                            location_msg = f"{place} {sub_loc_clean}"
+                        elif place:
+                            location_msg = place
+                        elif sub_location:
+                            import re
+                            location_msg = re.sub(r'(에|에서|로|으로|의|와|과|까지|부터|만|도|조차|마저)$', '', sub_location).strip()
+                        else:
+                            location_msg = location.strip()
+                        
+                        if location_msg.lower() in ['nan', 'none']:
+                            location_msg = ""
+                        
+                        if location_msg:
+                            msg = f"{selected_name}을(를) {location_msg}에서 가져오겠습니다."
+                        else:
+                            msg = f"{selected_name}을(를) 가져오겠습니다."
+                        robot_cmd = to_task_command_en("deliver", selected_name, location_msg or location, memory_instance)
+                        logger.debug(f"[PHYSICAL] 구체적인 물건 발견 (사용자 발화 포함) - 바로 처리: {selected_name}")
+                        return {"success": True, "message": msg, "robot_command": robot_cmd}
+                    
+                    # ✅ 구체적인 물건이 없으면 재확인 질문 (예: "그냥 컵, 유리컵, 빨간 컵이 있는데 어떤 걸 말씀하시는 걸까요?")
+                    display_names = []
+                    for item in multiple_items:
+                        name = item.get("이름", "").strip()
+                        if name == target:
+                            display_names.append(f"그냥 {target}")
+                        else:
+                            display_names.append(name)
+                    item_list = ", ".join(display_names)
+                    msg = f"{item_list}이(가) 있는데 어떤 걸 말씀하시는 걸까요?"
+                    memory_instance.pending_question[session_id] = {
+                        "type": "item_selection",
+                        "action": "deliver",
+                        "target_keyword": target,
+                        "items": multiple_items,
+                        "question": msg
+                    }
+                    memory_instance.current_question[session_id] = msg
+                    logger.debug(f"[PHYSICAL] 여러 물건 발견 - 재확인 질문: {item_list}")
+                    return {"success": True, "message": msg, "robot_command": None}
+                
+                # ✅ 정확히 일치하는 물건이 하나만 있으면 바로 처리
+                if len(multiple_items) == 1:
+                    exact_match = multiple_items[0]
+                    selected_name = exact_match.get("이름", "")
+                    location = exact_match.get("위치", "") or exact_match.get("장소", "") or exact_match.get("세부위치", "")
+                    place = exact_match.get("장소", "").strip()
+                    sub_location = exact_match.get("세부위치", "").strip()
+                    
+                    if place.lower() in ['nan', 'none', '']:
+                        place = ''
+                    if sub_location.lower() in ['nan', 'none', '']:
+                        sub_location = ''
+                    
+                    if place and sub_location:
+                        import re
+                        sub_loc_clean = re.sub(r'(에|에서|로|으로|의|와|과|까지|부터|만|도|조차|마저)$', '', sub_location).strip()
+                        location_msg = f"{place} {sub_loc_clean}"
+                    elif place:
+                        location_msg = place
+                    elif sub_location:
+                        import re
+                        location_msg = re.sub(r'(에|에서|로|으로|의|와|과|까지|부터|만|도|조차|마저)$', '', sub_location).strip()
+                    else:
+                        location_msg = location.strip()
+                    
+                    if location_msg.lower() in ['nan', 'none']:
+                        location_msg = ""
+                    
+                    if location_msg:
+                        msg = f"{selected_name}을(를) {location_msg}에서 가져오겠습니다."
+                    else:
+                        msg = f"{selected_name}을(를) 가져오겠습니다."
+                    robot_cmd = to_task_command_en("deliver", selected_name, location_msg or location, memory_instance)
+                    logger.debug(f"[PHYSICAL] 단일 물건 발견 - 바로 처리: {selected_name}")
+                    return {"success": True, "message": msg, "robot_command": robot_cmd}
+                
                 saved_location = None
                 try:
                     if hasattr(memory_instance, 'get_location'):
@@ -1077,11 +1330,250 @@ def handle_pending_answer(user_input: str, memory_instance, session_id: str) -> 
                 memory_instance.pending_question.pop(session_id, None)
                 return {"success": True, "message": f"{item}을(를) {loc}에 정리해둘게요.", "robot_command": cmd}
             memory_instance.pending_question.pop(session_id, None)
-            return {"success": True, "message": f"'{item}'의 위치를 '{loc}'(으)로 저장했어요.", "robot_command": None}
+            return {"success": True, "message": f"{item}의 위치를 {loc}로 저장했어요.", "robot_command": None}
         elif question_type == "location_confirmed":
 
             res = _handle_task_execution_response(user_input, question_data, memory_instance, session_id)
             return res if isinstance(res, dict) else {"success": True, "message": res, "robot_command": None}
+
+        elif question_type == "location_item_selection":
+            # ✅ "컵 어디있어?" 재질문 후 사용자가 "컵" 또는 "그냥 컵" 등으로 선택 → 해당 물건 위치만 안내
+            items = question_data.get("items", [])
+            target_keyword = question_data.get("target_keyword", "")
+            if not items:
+                memory_instance.pending_question.pop(session_id, None)
+                return {"success": False, "message": "선택할 물건이 없어요.", "robot_command": None}
+            user_input_clean = user_input.strip()
+            selected_item = None
+            for item in items:
+                name = (item.get("이름") or "").strip()
+                if name == user_input_clean or user_input_clean == f"그냥 {name}":
+                    selected_item = item
+                    break
+            if not selected_item:
+                for item in items:
+                    name = (item.get("이름") or "").strip()
+                    if name in user_input_clean or user_input_clean in name:
+                        selected_item = item
+                        break
+            if not selected_item:
+                memory_instance.pending_question.pop(session_id, None)
+                return {"success": False, "message": f"어떤 {target_keyword}을(를) 말씀하시는지 모르겠어요. 목록 중에서 다시 말씀해 주세요.", "robot_command": None}
+            loc = (selected_item.get("위치") or "").strip()
+            name = (selected_item.get("이름") or "").strip()
+            memory_instance.pending_question.pop(session_id, None)
+            if hasattr(memory_instance, "current_question") and session_id in memory_instance.current_question:
+                del memory_instance.current_question[session_id]
+            if loc and loc.lower() not in ("nan", "none", ""):
+                msg = f"{name}{josa(name, ('은', '는'))} {loc}에 있어요."
+            else:
+                msg = f"{name}의 위치는 기록되어 있지 않아요."
+            return {"success": True, "message": msg, "robot_command": None}
+
+        elif question_type == "item_selection":
+            # ✅ 여러 물건 중 선택 처리 (가져와/정리 등)
+            items = question_data.get("items", [])
+            target_keyword = question_data.get("target_keyword", "")
+            action = question_data.get("action", "deliver")
+            
+            if not items:
+                memory_instance.pending_question.pop(session_id, None)
+                return {"success": False, "message": "선택할 물건이 없어요.", "robot_command": None}
+            
+            selected_item = None
+            user_input_clean = user_input.strip()
+            
+            # 1. 정확히 일치 (이름, "그냥 {이름}" 포함)
+            for item in items:
+                item_name = item.get("이름", "").strip()
+                if item_name == user_input_clean or user_input_clean == f"그냥 {item_name}":
+                    selected_item = item
+                    logger.debug(f"[PENDING] 정확히 일치하는 물건 발견: {item_name}")
+                    break
+            
+            # 2. 부분 일치
+            if not selected_item:
+                for item in items:
+                    item_name = item.get("이름", "").strip()
+                    if item_name in user_input_clean or user_input_clean in item_name:
+                        selected_item = item
+                        logger.debug(f"[PENDING] 부분 일치하는 물건 발견: {item_name}")
+                        break
+            
+            if not selected_item:
+                # 매칭 실패 시 재질문
+                memory_instance.pending_question.pop(session_id, None)
+                return {"success": False, "message": f"어떤 {target_keyword}을(를) 말씀하시는지 모르겠어요. 다시 말씀해 주시겠어요?", "robot_command": None}
+
+            # 선택한 물건으로 가져오기/정리 수행
+            selected_name = selected_item.get("이름", "")
+            place = selected_item.get("장소", "").strip()
+            sub_location = selected_item.get("세부위치", "").strip()
+            if place.lower() in ['nan', 'none', '']:
+                place = ''
+            if sub_location.lower() in ['nan', 'none', '']:
+                sub_location = ''
+            if place and sub_location:
+                import re
+                sub_loc_clean = re.sub(r'(에|에서|로|으로|의|와|과|까지|부터|만|도|조차|마저)$', '', sub_location).strip()
+                location_msg = f"{place} {sub_loc_clean}"
+            elif place:
+                location_msg = place
+            elif sub_location:
+                import re
+                location_msg = re.sub(r'(에|에서|로|으로|의|와|과|까지|부터|만|도|조차|마저)$', '', sub_location).strip()
+            else:
+                location_msg = (selected_item.get("위치", "") or "").strip()
+            if location_msg.lower() in ['nan', 'none']:
+                location_msg = ""
+            memory_instance.pending_question.pop(session_id, None)
+            if session_id in memory_instance.current_question:
+                del memory_instance.current_question[session_id]
+            if action == "deliver":
+                if location_msg:
+                    msg = f"{selected_name}을(를) {location_msg}에서 가져오겠습니다."
+                else:
+                    msg = f"{selected_name}을(를) 가져오겠습니다."
+                robot_cmd = to_task_command_en("deliver", selected_name, location_msg or "", memory_instance)
+                return {"success": True, "message": msg, "robot_command": robot_cmd}
+            elif action == "organize":
+                if location_msg:
+                    msg = f"{selected_name}을(를) {location_msg}에 정리해두겠습니다."
+                else:
+                    msg = f"{selected_name}을(를) 정리해두겠습니다."
+                robot_cmd = to_task_command_en("organize", selected_name, location_msg or "", memory_instance)
+                return {"success": True, "message": msg, "robot_command": robot_cmd}
+            return {"success": True, "message": f"{selected_name}을(를) 처리하겠습니다.", "robot_command": None}
+
+        elif question_type == "schedule_conflict":
+            # ✅ 일정 충돌 처리: 사용자 응답에 따라 일정 합치기 또는 변경
+            existing_schedule = question_data.get("existing_schedule", {})
+            new_schedule = question_data.get("new_schedule", {})
+            
+            user_input_lower = user_input.lower().strip()
+            
+            # "합치기", "합쳐", "둘 다", "모두" 등의 키워드로 일정 합치기 판단
+            # - "합쳐", "합쳐줘", "같이" 등도 포함
+            merge_keywords = [
+                "합치", "합쳐", "합해", "같이", "함께",
+                "둘 다", "둘다", "모두", "다 같이",
+                "추가", "더하기"
+            ]
+            replace_keywords = ["바꿔", "변경", "교체", "대체", "새로", "지우고"]
+            
+            is_merge = any(kw in user_input_lower for kw in merge_keywords)
+            is_replace = any(kw in user_input_lower for kw in replace_keywords)
+            
+            user_name = memory_instance.user_names.get(session_id or "default")
+            if not user_name or user_name == "사용자":
+                memory_instance.pending_question.pop(session_id, None)
+                return {"success": False, "message": "사용자 정보를 찾을 수 없어요.", "robot_command": None}
+            
+            if is_merge:
+                # ✅ 일정 합치기: 두 제목을 합쳐서 저장
+                existing_title = existing_schedule.get("제목", "").strip()
+                new_title = new_schedule.get("제목", "").strip()
+                merged_title = f"{existing_title}, {new_title}" if existing_title and new_title else (existing_title or new_title)
+                
+                # 기존 일정 삭제 (엑셀 + 버퍼에서, 날짜/제목 정규화 후 비교)
+                try:
+                    from life_assist_dm.user_excel_manager import _normalize_date_for_compare, _normalize_schedule_title
+                    existing_date = str(existing_schedule.get("날짜", "")).strip()
+                    existing_time = str(existing_schedule.get("시간", "")).strip()
+                    existing_title_orig = str(existing_schedule.get("제목", "")).strip()
+                    existing_date_norm = _normalize_date_for_compare(existing_date)
+                    existing_title_norm = _normalize_schedule_title(existing_title_orig)
+                    df = memory_instance.excel_manager.load_sheet_data(user_name, "일정")
+                    if df is not None and not df.empty:
+                        df_dates = df["날짜"].astype(str).str.strip().apply(_normalize_date_for_compare)
+                        df_times = df["시간"].astype(str).str.strip()
+                        df_titles = df["제목"].astype(str).str.strip().apply(_normalize_schedule_title)
+                        mask = (df_dates == existing_date_norm) & (df_times == existing_time) & (df_titles == existing_title_norm)
+                        df = df[~mask]
+                        excel_path = memory_instance.excel_manager.get_user_excel_path(user_name)
+                        with pd.ExcelWriter(excel_path, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
+                            df.to_excel(writer, sheet_name="일정", index=False)
+                    try:
+                        buffer_key = (user_name, "일정")
+                        buffered = memory_instance.excel_manager._buffered_changes.get(buffer_key, [])
+                        if buffered:
+                            cleaned = [rec for rec in buffered if not (
+                                _normalize_date_for_compare(str(rec.get("날짜", "")).strip()) == existing_date_norm and
+                                str(rec.get("시간", "")).strip() == existing_time and
+                                _normalize_schedule_title(str(rec.get("제목", "")).strip()) == existing_title_norm
+                            )]
+                            memory_instance.excel_manager._buffered_changes[buffer_key] = cleaned
+                    except Exception:
+                        pass
+                except Exception as e:
+                    logger.warning(f"[SCHEDULE MERGE] 기존 일정 삭제 실패: {e}")
+                
+                # 합쳐진 일정 저장
+                memory_instance.excel_manager.save_entity_data(user_name, "일정", {
+                    "제목": merged_title,
+                    "날짜": new_schedule.get("날짜", ""),
+                    "시간": new_schedule.get("시간", ""),
+                    "장소": new_schedule.get("장소", "") or existing_schedule.get("장소", "")
+                })
+                
+                memory_instance.pending_question.pop(session_id, None)
+                if session_id in memory_instance.current_question:
+                    del memory_instance.current_question[session_id]
+                
+                return {"success": True, "message": f"'{merged_title}' 일정으로 합쳐서 저장했어요.", "robot_command": None}
+            
+            elif is_replace:
+                # ✅ 일정 변경: 기존 일정 삭제하고 새 일정 저장 (날짜/제목 정규화 후 비교)
+                try:
+                    from life_assist_dm.user_excel_manager import _normalize_date_for_compare, _normalize_schedule_title
+                    existing_date = str(existing_schedule.get("날짜", "")).strip()
+                    existing_time = str(existing_schedule.get("시간", "")).strip()
+                    existing_title_orig = str(existing_schedule.get("제목", "")).strip()
+                    existing_date_norm = _normalize_date_for_compare(existing_date)
+                    existing_title_norm = _normalize_schedule_title(existing_title_orig)
+                    df = memory_instance.excel_manager.load_sheet_data(user_name, "일정")
+                    if df is not None and not df.empty:
+                        df_dates = df["날짜"].astype(str).str.strip().apply(_normalize_date_for_compare)
+                        df_times = df["시간"].astype(str).str.strip()
+                        df_titles = df["제목"].astype(str).str.strip().apply(_normalize_schedule_title)
+                        mask = (df_dates == existing_date_norm) & (df_times == existing_time) & (df_titles == existing_title_norm)
+                        df = df[~mask]
+                        excel_path = memory_instance.excel_manager.get_user_excel_path(user_name)
+                        with pd.ExcelWriter(excel_path, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
+                            df.to_excel(writer, sheet_name="일정", index=False)
+                    try:
+                        buffer_key = (user_name, "일정")
+                        buffered = memory_instance.excel_manager._buffered_changes.get(buffer_key, [])
+                        if buffered:
+                            cleaned = [rec for rec in buffered if not (
+                                _normalize_date_for_compare(str(rec.get("날짜", "")).strip()) == existing_date_norm and
+                                str(rec.get("시간", "")).strip() == existing_time and
+                                _normalize_schedule_title(str(rec.get("제목", "")).strip()) == existing_title_norm
+                            )]
+                            memory_instance.excel_manager._buffered_changes[buffer_key] = cleaned
+                    except Exception:
+                        pass
+                except Exception as e:
+                    logger.warning(f"[SCHEDULE REPLACE] 기존 일정 삭제 실패: {e}")
+                
+                # 새 일정 저장
+                memory_instance.excel_manager.save_entity_data(user_name, "일정", {
+                    "제목": new_schedule.get("제목", ""),
+                    "날짜": new_schedule.get("날짜", ""),
+                    "시간": new_schedule.get("시간", ""),
+                    "장소": new_schedule.get("장소", "")
+                })
+                
+                memory_instance.pending_question.pop(session_id, None)
+                if session_id in memory_instance.current_question:
+                    del memory_instance.current_question[session_id]
+                
+                new_title = new_schedule.get("제목", "일정")
+                return {"success": True, "message": f"'{new_title}' 일정으로 변경해서 저장했어요.", "robot_command": None}
+            
+            else:
+                # 명확하지 않은 응답
+                return {"success": False, "message": "일정을 합칠까요, 아니면 바꿀까요? 다시 말씀해 주세요.", "robot_command": None}
         else:
 
             return {
@@ -1528,6 +2020,196 @@ def handle_query_with_lcel(user_input: str, memory_instance, session_id: str) ->
             get_excel_sheets,
         )
 
+        # 일정/스케줄/예약 질문 또는 "병원 어디?" 등 장소 질문 → 엑셀 일정 시트를 맨 먼저 조회
+        user_name_early = memory_instance.user_names.get(session_id or "default")
+        schedule_keywords = ["일정", "스케줄", "예약"]
+        place_ask_keywords = ["병원", "치과", "미용실", "예약"]
+        is_schedule_or_place_ask = (
+            any(k in user_input for k in schedule_keywords)
+            or ("어디" in user_input and any(k in user_input for k in place_ask_keywords))
+        )
+        if user_name_early and is_schedule_or_place_ask:
+            def _search_schedule_first(df_sched, query_text):
+                import pandas as pd
+                dfq = df_sched.fillna("")
+                if dfq.empty:
+                    return None
+                # "병원 어디?" → 제목에 병원/치과/미용실/예약 포함된 행 중 날짜가 가장 가까운(빠른) 일정의 장소 반환
+                if "어디" in query_text:
+                    for kw in place_ask_keywords:
+                        if kw not in query_text:
+                            continue
+                        col_title = "제목" if "제목" in dfq.columns else "내용"
+                        mask = dfq[col_title].astype(str).str.contains(kw, na=False)
+                        matched = dfq[mask].copy()
+                        if matched.empty:
+                            continue
+                        # 각 행 날짜를 ISO로 바꿔서 정렬 후 가장 가까운(오늘/내일 우선) 일정 선택
+                        def _row_to_iso(r):
+                            v = str(r.get("날짜", "") or "").strip()
+                            if not v or v.lower() in ("nan", "none", ""):
+                                return "9999-12-31"
+                            try:
+                                return _normalize_date_to_iso(v)
+                            except Exception:
+                                return v
+                        matched["_iso"] = matched.apply(_row_to_iso, axis=1)
+                        matched = matched.sort_values("_iso").reset_index(drop=True)
+                        row = matched.iloc[0]
+                        place = str(row.get("장소", "") or row.get("위치", "") or "").strip()
+                        if place and place.lower() not in ("nan", "none", ""):
+                            title = str(row.get(col_title, "")).strip() or kw
+                            return f"{title} 일정은 {place}에 있어요."
+                    return None
+                # "이번주/이번 주" 또는 "다음주/다음 주"면 해당 주(월~일) 범위 필터
+                if ("이번주" in query_text) or ("이번 주" in query_text) or ("다음주" in query_text) or ("다음 주" in query_text):
+                    from datetime import datetime, timedelta
+                    now = datetime.now()
+                    base_monday = now - timedelta(days=now.weekday())          # 이번 주 월요일
+                    # 다음 주면 기준 월요일을 +7일
+                    if ("다음주" in query_text) or ("다음 주" in query_text):
+                        base_monday = base_monday + timedelta(days=7)
+                    week_start = base_monday
+                    week_end = week_start + timedelta(days=6)                 # 일요일
+                    week_start_iso = week_start.strftime("%Y-%m-%d")
+                    week_end_iso = week_end.strftime("%Y-%m-%d")
+                    def _cell_to_iso(val):
+                        if val is None or (isinstance(val, float) and pd.isna(val)):
+                            return ""
+                        if hasattr(val, "strftime"):
+                            try:
+                                return val.strftime("%Y-%m-%d")
+                            except Exception:
+                                pass
+                        v = str(val).strip()
+                        if not v or v.lower() in ("nan", "none", "nat", ""):
+                            return ""
+                        if len(v) >= 10 and v[4] == "-" and v[7] == "-":
+                            return v[:10]
+                        try:
+                            return _normalize_date_to_iso(v)
+                        except Exception:
+                            return v
+                    dfq = dfq.copy()
+                    dfq["_iso"] = dfq["날짜"].apply(_cell_to_iso)
+                    dfq = dfq[(dfq["_iso"] >= week_start_iso) & (dfq["_iso"] <= week_end_iso)]
+                    qdate = None
+                else:
+                    qdate = _extract_date(query_text)
+                    if qdate:
+                        # '금요일' 같이 요일만 있는 경우에는 여기서 가장 가까운 해당 요일 날짜를 계산
+                        weekdays_local = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
+                        if qdate in weekdays_local:
+                            from datetime import datetime, timedelta
+                            now = datetime.now()
+                            current_weekday = now.weekday()
+                            target_idx = weekdays_local.index(qdate)
+                            days_ahead = target_idx - current_weekday
+                            if days_ahead < 0:
+                                days_ahead += 7
+                            normalized_qdate = (now + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+                        else:
+                            normalized_qdate = _normalize_date_to_iso(qdate)
+                    # 시트 날짜가 datetime('2026-02-27 00:00:00'), '2026-02-27', '내일' 등 다양하므로 행마다 ISO로 통일해 비교
+                    def _cell_to_iso(val):
+                        if val is None or (isinstance(val, float) and pd.isna(val)):
+                            return ""
+                        if hasattr(val, "strftime"):
+                            try:
+                                return val.strftime("%Y-%m-%d")
+                            except Exception:
+                                pass
+                        v = str(val).strip()
+                        if not v or v.lower() in ("nan", "none", "nat", ""):
+                            return ""
+                        if len(v) >= 10 and v[4] == "-" and v[7] == "-":
+                            return v[:10]
+                        try:
+                            return _normalize_date_to_iso(v)
+                        except Exception:
+                            return v
+                    dfq = dfq.copy()
+                    dfq["_iso"] = dfq["날짜"].apply(_cell_to_iso)
+                    dfq = dfq[dfq["_iso"].astype(str) == normalized_qdate]
+                if dfq.empty and not qdate:
+                    dfq = df_sched.fillna("").tail(10)
+                if dfq.empty:
+                    return None
+                # 같은 날 일정 여러 개면 한 문장으로 자연스럽게 묶어서 말하기
+                items = []
+                for _, row in dfq.iterrows():
+                    title = str(row.get("제목", "")).strip()
+                    if title.lower() in ("nan", "none", ""):
+                        title = str(row.get("내용", "")).strip()
+                    if title.lower() in ("nan", "none", ""):
+                        title = "일정"
+                    date = str(row.get("날짜", "")).strip()
+                    if len(date) > 10 and date[4] == "-" and date[7] == "-":
+                        date = date[:10]
+                    time = str(row.get("시간", "")).strip()
+                    if pd.isna(row.get("시간")) or time.lower() in ("nan", "none", ""):
+                        time = ""
+                    if pd.isna(row.get("날짜")) or date.lower() in ("nan", "none", ""):
+                        date = ""
+                    if pd.isna(row.get("제목")):
+                        title = "일정" if not title or title.lower() in ("nan", "none", "") else title
+                    items.append((date, time, title))
+
+                if not items:
+                    return None
+
+                # 모두 같은 날짜이면: "2026-02-27 오전 11시에 병원 일정, 오후 5시에 미팅 일정이 있어요."
+                dates_only = {d for d, _, _ in items if d}
+                # 모두 같은 날짜이면: "2026-02-27 오전 11시에 병원 일정, 오후 5시에 미팅 일정이 있어요."
+                if len(dates_only) == 1:
+                    base_date = dates_only.pop()
+                    parts = []
+                    for idx, (d, t, title) in enumerate(items):
+                        if idx == 0:
+                            if t and base_date:
+                                parts.append(f"{base_date} {t}에 {title} 일정")
+                            elif base_date:
+                                parts.append(f"{base_date}에 {title} 일정")
+                            elif t:
+                                parts.append(f"{t}에 {title} 일정")
+                            else:
+                                parts.append(f"{title} 일정")
+                        else:
+                            if t:
+                                parts.append(f"{t}에 {title} 일정")
+                            else:
+                                parts.append(f"{title} 일정")
+                    return ", ".join(parts) + "이 있어요."
+
+                # 여러 날짜가 섞여 있으면: "2026-02-27 오전 11시에 병원 일정, 2026-02-27 오후 5시에 미팅 일정, 2026-02-28 오후 2시에 헬스장 일정, ...이 있어요."
+                pieces = []
+                for d, t, title in items:
+                    if d and t:
+                        segment = f"{d} {t}에 {title} 일정"
+                    elif d:
+                        segment = f"{d}에 {title} 일정"
+                    elif t:
+                        segment = f"{t}에 {title} 일정"
+                    else:
+                        segment = f"{title} 일정"
+                    pieces.append(segment)
+                return ", ".join(pieces) + "이 있어요."
+
+            try:
+                result = _query_with_fallback(
+                    user_input=user_input,
+                    memory_instance=memory_instance,
+                    session_id=session_id,
+                    sheet_name="일정",
+                    primary_search_func=_search_schedule_first,
+                    query_type="일정",
+                    use_fallback=False,
+                )
+                if result:
+                    return result
+            except Exception:
+                pass
+
         def _classify_profile_query_llm(text: str):
             try:
                 llm = getattr(memory_instance, 'llm', None)
@@ -1631,6 +2313,16 @@ def handle_query_with_lcel(user_input: str, memory_instance, session_id: str) ->
                 if user_name and user_name != "사용자":
                     context_map["이름"] = user_name
 
+            # 🔹 "내 이름이 뭐야?" 같은 이름 질의는 LLM 없이 직접 응답
+            try:
+                fields = classification.get("fields") or []
+            except Exception:
+                fields = []
+            if "name" in fields:
+                name_value = context_map.get("이름") or user_name
+                if name_value and name_value != "사용자":
+                    return f"지금 말씀 중인 사용자 분의 이름은 {name_value}이에요."
+
             try:
                 from life_assist_dm.llm.gpt_utils import get_llm
                 llm = get_llm()
@@ -1642,49 +2334,164 @@ def handle_query_with_lcel(user_input: str, memory_instance, session_id: str) ->
                     "위 사용자 정보와 질문 의도를 고려해 간단히 한국어로 답하세요.\n모르면 정직하게 모른다고 답하세요. 불필요한 항목은 말하지 마세요."
                 )
                 resp = llm.invoke(prompt)
-                return resp.content.strip() if hasattr(resp, 'content') else str(resp).strip()
+                out = (resp.content or "") if hasattr(resp, 'content') else str(resp)
+                return (out.strip() or "해당 정보를 찾지 못했어요.")
             except Exception:
                 return "아직 그 정보는 기억해 둔 게 없어요. 한 번 알려주시면 다음부터 답해드릴게요."
 
         try:
-            medicine_triggers = ["먹는", "복용", "드시는", "먹었던", "기억"]
+            medicine_triggers = ["먹는", "먹던", "먹어야", "먹어", "복용", "드시는", "먹었던", "기억"]
             has_medicine_trigger = any(k in user_input for k in medicine_triggers)
 
-            if not has_medicine_trigger and "약" in user_input and "약속" not in user_input:
-
+            # ⚠️ '예약', '약속' 등 안의 '약' 때문에 오인식되는 것을 막기 위해
+            # 단순 `"약" in user_input` 체크는 제거하고, 복약 패턴에서만 약 쿼리로 인식
+            if not has_medicine_trigger:
                 if re.search(r"[가-힣A-Za-z]+약|약\s*[먹드]", user_input):
                     has_medicine_trigger = True
             if has_medicine_trigger:
 
                 def _search_medicine(df_medicine, query_text):
                     df_medicine = df_medicine.fillna("")
+
                     valid_meds = []
                     for _, row in df_medicine.iterrows():
                         drug_name = str(row.get("약이름", "")).strip()
-                        if drug_name.lower() not in ("nan", "none", ""):
-                            dose_time = str(row.get("시간", "")).strip()
-                            if dose_time.lower() in ("nan", "none", ""):
-                                dose_time = ""
-                            valid_meds.append({
-                                "약이름": drug_name,
-                                "시간": dose_time
-                            })
+                        if drug_name.lower() in ("nan", "none", ""):
+                            continue
+                        dose_time = str(row.get("시간", "")).strip()
+                        if dose_time.lower() in ("nan", "none", ""):
+                            dose_time = ""
+                        take_method = str(row.get("복용방법", "")).strip()
+                        if take_method.lower() in ("nan", "none", ""):
+                            take_method = ""
+                        dose_amount = str(row.get("용량", "")).strip()
+                        if dose_amount.lower() in ("nan", "none", ""):
+                            dose_amount = ""
+                        dose_unit = str(row.get("단위", "")).strip()
+                        if dose_unit.lower() in ("nan", "none", ""):
+                            dose_unit = ""
+                        valid_meds.append({
+                            "약이름": drug_name,
+                            "시간": dose_time,
+                            "복용방법": take_method,
+                            "용량": dose_amount,
+                            "단위": dose_unit,
+                        })
 
-                    if valid_meds:
+                    if not valid_meds:
+                        return None
 
-                        med_texts = []
+                    # 질문에서 시간대(아침/점심/저녁)와 복용 시점(식전/식후/공복/취침 전 등) 추출
+                    text = query_text or ""
+                    text_no_space = text.replace(" ", "")
+                    time_keywords = {
+                        "아침": "아침",
+                        "점심": "점심",
+                        "저녁": "저녁",
+                        "밤": "저녁",
+                    }
+                    method_keywords = {
+                        "식전": "식전",
+                        "공복": "공복",
+                        "식후": "식후",
+                        "취침 전": "취침 전",
+                        "자기 전": "취침 전",
+                        "잠자기 전": "취침 전",
+                    }
+
+                    requested_times = {v for k, v in time_keywords.items() if k in text}
+                    requested_methods = {v for k, v in method_keywords.items() if k in text}
+
+                    # "아침 먹고 어떤 약", "아침밥 먹었는데 무슨 약" 등은 식후로 해석
+                    if not requested_methods:
+                        if (
+                            "먹고" in text
+                            or "밥 먹었" in text
+                            or "밥을 먹었" in text
+                            or "밥은 먹었" in text
+                            or "밥먹었" in text_no_space
+                        ):
+                            requested_methods.add("식후")
+
+                    # 용량(몇 알/몇 정 등) 질문인지 확인
+                    dose_q_keywords = ["몇알", "몇정", "몇캡슐", "몇개", "몇번", "용량", "얼마나"]
+                    is_dose_question = any(k in text_no_space for k in dose_q_keywords)
+
+                    if is_dose_question:
+                        # 질문 안에 등장하는 약 이름과 매칭
+                        target_med = None
                         for med in valid_meds:
-                            if med["시간"]:
-                                med_texts.append(f"{med['시간']}에 {med['약이름']}")
-                            else:
-                                med_texts.append(med['약이름'])
+                            name = med.get("약이름") or ""
+                            if not name:
+                                continue
+                            if (name in text) or (name.replace(" ", "") in text_no_space):
+                                if (not target_med) or len(name) > len(target_med.get("약이름", "")):
+                                    target_med = med
 
-                        if len(med_texts) == 1:
-                            return f"네, 기억하고 있어요! {med_texts[0]} 드시고 계시죠."
+                        if target_med:
+                            dose_amount = (target_med.get("용량") or "").strip()
+                            dose_unit = (target_med.get("단위") or "").strip()
+                            if dose_amount and dose_unit:
+                                return f"{target_med['약이름']}은(는) {dose_amount}{dose_unit} 드시라고 기록해 두었어요."
+                            elif dose_amount:
+                                return f"{target_med['약이름']}은(는) {dose_amount} 정도로 드시라고 기록해 두었어요."
+                            elif dose_unit:
+                                return f"{target_med['약이름']}은(는) {dose_unit} 단위로 복용하도록 되어 있어요."
+
+                    def _match_time(med_time: str) -> bool:
+                        if not requested_times:
+                            return True
+                        if not med_time:
+                            return False
+                        return any(t in med_time for t in requested_times)
+
+                    def _match_method(med_method: str) -> bool:
+                        if not requested_methods:
+                            return True
+                        if not med_method:
+                            return False
+                        return any(m in med_method for m in requested_methods)
+
+                    # 우선 질문 조건(시간대/복용방법)에 맞는 약만 필터
+                    filtered = [
+                        m for m in valid_meds
+                        if _match_time(m["시간"]) and _match_method(m["복용방법"])
+                    ]
+
+                    # 조건에 맞는 게 없으면 기존 전체 목록 기반 응답
+                    target_list = filtered if filtered else valid_meds
+
+                    med_texts = []
+                    for med in target_list:
+                        label_parts = []
+                        if med["시간"]:
+                            label_parts.append(med["시간"])
+                        if med["복용방법"]:
+                            label_parts.append(med["복용방법"])
+                        prefix = " ".join(label_parts)
+                        if prefix:
+                            med_texts.append(f"{prefix}에 {med['약이름']}")
                         else:
-                            med_list = ", ".join(med_texts[:-1]) + f", {med_texts[-1]}"
-                            return f"네, 기억하고 있어요! {med_list} 드시고 계시죠."
-                    return None
+                            med_texts.append(med["약이름"])
+
+                    if not med_texts:
+                        return None
+
+                    if len(med_texts) == 1:
+                        return f"네, 기억하고 있어요! {med_texts[0]} 드셔야 해요."
+                    else:
+                        med_list = ", ".join(med_texts[:-1]) + f", {med_texts[-1]}"
+                        return f"네, 기억하고 있어요! {med_list} 드셔야 해요."
+
+                # 복약정보 시트가 비어 있으면 fallback(LLM)으로 가지 않고 안내만 반환
+                try:
+                    user_name_med = memory_instance.user_names.get(session_id or "default")
+                    if user_name_med:
+                        df_med_check = memory_instance.excel_manager.safe_load_sheet(user_name_med, "복약정보")
+                        if df_med_check is None or df_med_check.empty:
+                            return "기록된 복약 정보가 없어요. 알려주시면 기억해둘게요."
+                except Exception:
+                    pass
 
                 result = _query_with_fallback(
                     user_input=user_input,
@@ -1708,10 +2515,76 @@ def handle_query_with_lcel(user_input: str, memory_instance, session_id: str) ->
                 def _search_family(df_family, query_text):
                     dfq = df_family.fillna("")
 
+                    # 1) "우리 가족 이름 다 말해봐" 같은 전체 가족 이름 요청 처리
+                    if "가족" in query_text and any(k in query_text for k in ["다", "모두", "전부", "전체"]):
+                        # 엔티티타입이 '가족'인 행만 우선 사용 (없으면 친구 제외)
+                        if "엔티티타입" in dfq.columns:
+                            df_family_only = dfq[dfq["엔티티타입"].astype(str) == "가족"]
+                        else:
+                            df_family_only = dfq[dfq["관계"].astype(str) != "친구"] if "관계" in dfq.columns else dfq
+
+                        if df_family_only.empty:
+                            return None
+
+                        members = []
+                        for _, row in df_family_only.iterrows():
+                            rel = str(row.get("관계", "") or "").strip()
+                            name = str(row.get("이름", "") or "").strip()
+                            if not name or name.lower() in ("nan", "none", ""):
+                                continue
+                            if rel and rel.lower() not in ("nan", "none", ""):
+                                members.append(f"{rel} {name}")
+                            else:
+                                members.append(name)
+
+                        if not members:
+                            return None
+
+                        members_text = ", ".join(members)
+                        return f"가족 이름은 {members_text}에요."
+
+                    # 1-1) "내 친구 이름 다 말해봐" 같은 친구 전체 이름 요청 처리
+                    if "친구" in query_text and any(k in query_text for k in ["다", "모두", "전부", "전체"]):
+                        if "엔티티타입" in dfq.columns:
+                            df_friend_only = dfq[dfq["엔티티타입"].astype(str) == "친구"]
+                        else:
+                            df_friend_only = dfq[dfq["관계"].astype(str) == "친구"] if "관계" in dfq.columns else dfq
+
+                        if df_friend_only.empty:
+                            return None
+
+                        friends = []
+                        for _, row in df_friend_only.iterrows():
+                            name = str(row.get("이름", "") or "").strip()
+                            if not name or name.lower() in ("nan", "none", ""):
+                                continue
+                            friends.append(name)
+
+                        if not friends:
+                            return None
+
+                        friends_text = ", ".join(friends)
+                        return f"친구 이름은 {friends_text}에요."
+
+                    # 1-2) "우리집 강아지 이름 대봐" 등 반려동물 이름 요청
+                    if any(k in query_text for k in ["강아지", "반려견", "반려 동물", "반려동물"]):
+                        df_dog = dfq.copy()
+                        if "관계" in df_dog.columns:
+                            df_dog = df_dog[df_dog["관계"].astype(str) == "강아지"]
+                        if df_dog.empty and "엔티티타입" in dfq.columns:
+                            df_dog = dfq[dfq["엔티티타입"].astype(str) == "강아지"]
+                        if not df_dog.empty:
+                            row = df_dog.iloc[-1]
+                            name = str(row.get("이름", "") or "").strip()
+                            if name and name.lower() not in ("nan", "none", ""):
+                                return f"강아지의 이름은 {name}에요."
+
+                    # 2) 특정 관계(엄마/동생 등) 한 명을 묻는 경우: 기존 로직 유지
                     relations = ["동생", "형", "누나", "언니", "엄마", "아빠", "부모"]
                     target_rel = next((r for r in relations if r in query_text), None)
                     if target_rel and "관계" in dfq.columns:
                         dfq = dfq[dfq["관계"].astype(str) == target_rel]
+
                     if not dfq.empty:
                         row = dfq.iloc[-1]
                         rel = str(row.get("관계", "")).strip()
@@ -1791,34 +2664,63 @@ def handle_query_with_lcel(user_input: str, memory_instance, session_id: str) ->
 
             def _search_item_location(df_items, query_text):
                 df_items = df_items.fillna("")
+                query_words = set(w.strip() for w in query_text.split() if len(w.strip()) >= 1)
+                # 질문형 단어 제외 (어디있어? 등은 물건명이 아님)
+                query_words = {w for w in query_words if not w.endswith("?") and w not in ("어디", "있어", "있나", "있니")}
+                if not query_words:
+                    return None
 
+                matches = []  # (item_name, location, matched_keyword)
                 for _, row in df_items.iterrows():
                     item_name = str(row.get("물건이름", "")).strip() or str(row.get("이름", "")).strip()
-                    if item_name and item_name.lower() not in ("nan", "none", ""):
+                    if not item_name or item_name.lower() in ("nan", "none", ""):
+                        continue
+                    # 질의 단어와 매칭: 정확히 일치 / 끝에 포함(유리컵-컵) / 띄어쓰기 단어로 포함(빨간 컵-컵)
+                    matched_kw = None
+                    for q in query_words:
+                        if item_name == q or item_name.endswith(q) or q in item_name.split():
+                            matched_kw = q
+                            break
+                    if not matched_kw:
+                        continue
 
-                        if item_name in query_text or ("어디" in query_text and "위치" in query_text):
+                    location = str(row.get("위치", "")).strip()
+                    if not location or location.lower() in ("nan", "none", ""):
+                        place = str(row.get("장소", "")).strip()
+                        sub_location = str(row.get("세부위치", "")).strip()
+                        if place.lower() in ['nan', 'none', '']:
+                            place = ''
+                        if sub_location.lower() in ['nan', 'none', '']:
+                            sub_location = ''
+                        if place and sub_location:
+                            location = f"{place} {sub_location}"
+                        elif place:
+                            location = place
+                        elif sub_location:
+                            location = sub_location
+                    if not location or location.lower() in ("nan", "none", ""):
+                        continue
+                    matches.append((item_name, location, matched_kw))
 
-                            location = str(row.get("위치", "")).strip()
-                            if not location or location.lower() in ("nan", "none", ""):
-
-                                place = str(row.get("장소", "")).strip()
-                                sub_location = str(row.get("세부위치", "")).strip()
-
-                                if place.lower() in ['nan', 'none', '']:
-                                    place = ''
-                                if sub_location.lower() in ['nan', 'none', '']:
-                                    sub_location = ''
-
-                                if place and sub_location:
-                                    location = f"{place} {sub_location}"
-                                elif place:
-                                    location = place
-                                elif sub_location:
-                                    location = sub_location
-
-                            if location and location.lower() not in ("nan", "none", ""):
-                                return f"{item_name}{josa(item_name, ('은','는'))} {location}에 있어요."
-                return None
+                if not matches:
+                    return None
+                # 질의에 구체적 물건명(띄어쓰기 있거나 2글자 초과)이 포함된 경우만 필터. "컵"만 있으면 phrase 필터 안 함 → 여러 후보 유지 후 재질문.
+                phrase_matches = [m for m in matches if m[0] in query_text]
+                if phrase_matches and any(" " in m[0] or len(m[0]) > 2 for m in phrase_matches):
+                    matches = phrase_matches
+                if len(matches) == 1:
+                    item_name, location, _ = matches[0]
+                    return f"{item_name}{josa(item_name, ('은','는'))} {location}에 있어요."
+                # 2개 이상: 재질문 + 다음 답변("컵"/"그냥 컵" 등)에서 선택 처리하기 위해 dict 반환
+                keyword = matches[0][2]
+                names = [m[0] for m in matches]
+                if len(names) == 2:
+                    tail = f"{names[0]}, {names[1]}이(가) 있어요."
+                else:
+                    tail = ", ".join(names[:-1]) + f", {names[-1]}이(가) 있어요."
+                message = f"어떤 {keyword}을(를) 말씀하시는 건가요? {tail}"
+                items_for_pending = [{"이름": m[0], "위치": m[1]} for m in matches]
+                return {"message": message, "items": items_for_pending, "keyword": keyword}
 
             result = _query_with_fallback(
                 user_input=user_input,
@@ -1826,9 +2728,20 @@ def handle_query_with_lcel(user_input: str, memory_instance, session_id: str) ->
                 session_id=session_id,
                 sheet_name="물건위치",
                 primary_search_func=_search_item_location,
-                query_type="물건"
+                query_type="물건",
+                use_fallback=False,
             )
             if result:
+                if isinstance(result, dict) and "items" in result:
+                    memory_instance.pending_question[session_id] = {
+                        "type": "location_item_selection",
+                        "items": result["items"],
+                        "target_keyword": result.get("keyword", ""),
+                        "question": result["message"],
+                    }
+                    if hasattr(memory_instance, "current_question"):
+                        memory_instance.current_question[session_id] = result["message"]
+                    return result["message"]
                 return result
             return "해당 물건의 위치는 아직 기록되어 있지 않아요."
 
@@ -2019,50 +2932,88 @@ def handle_query_with_lcel(user_input: str, memory_instance, session_id: str) ->
                 if any(k in user_input for k in ["일정", "스케줄", "예약"]):
 
                     def _search_schedule(df_sched, query_text):
+                        import pandas as pd
                         dfq = df_sched.fillna("")
-
                         qdate = _extract_date(query_text)
                         if qdate:
-
                             normalized_qdate = _normalize_date_to_iso(qdate)
-
-                            dfq = dfq[dfq["날짜"].astype(str).str.strip() == normalized_qdate]
-
-                        if not dfq.empty:
-
-                            row = dfq.iloc[-1]
+                            def _cell_to_iso(val):
+                                if val is None or (isinstance(val, float) and pd.isna(val)):
+                                    return ""
+                                if hasattr(val, "strftime"):
+                                    try:
+                                        return val.strftime("%Y-%m-%d")
+                                    except Exception:
+                                        pass
+                                v = str(val).strip()
+                                if not v or v.lower() in ("nan", "none", "nat", ""):
+                                    return ""
+                                if len(v) >= 10 and v[4] == "-" and v[7] == "-":
+                                    return v[:10]
+                                try:
+                                    return _normalize_date_to_iso(v)
+                                except Exception:
+                                    return v
+                            dfq = dfq.copy()
+                            dfq["_iso"] = dfq["날짜"].apply(_cell_to_iso)
+                            dfq = dfq[dfq["_iso"].astype(str) == normalized_qdate]
+                        if dfq.empty:
+                            return None
+                        items = []
+                        for _, row in dfq.iterrows():
                             title = str(row.get("제목", "")).strip()
-
                             if title.lower() in ("nan", "none", ""):
                                 title = str(row.get("내용", "")).strip()
                             if title.lower() in ("nan", "none", ""):
                                 title = "일정"
-
                             date = str(row.get("날짜", "")).strip()
+                            if len(date) > 10 and date[4] == "-" and date[7] == "-":
+                                date = date[:10]
                             time = str(row.get("시간", "")).strip()
-
-                            import pandas as pd
                             if pd.isna(row.get("시간")) or time.lower() in ("nan", "none", ""):
                                 time = ""
                             if pd.isna(row.get("날짜")) or date.lower() in ("nan", "none", ""):
                                 date = ""
                             if pd.isna(row.get("제목")):
                                 title = "일정" if not title or title.lower() in ("nan", "none", "") else title
+                            items.append((date, time, title))
 
-                            if date and time:
-                                parts = f"{date} {time}"
-                            elif date:
-                                parts = date
-                            elif time:
-                                parts = time
-                            else:
-                                parts = ""
+                        if not items:
+                            return None
 
-                            if parts:
-                                return f"{parts}에 {title} 일정이 있어요."
+                        dates_only = {d for d, _, _ in items if d}
+                        if len(dates_only) == 1:
+                            base_date = dates_only.pop()
+                            parts = []
+                            for idx, (d, t, title) in enumerate(items):
+                                if idx == 0:
+                                    if t and base_date:
+                                        parts.append(f"{base_date} {t}에 {title} 일정")
+                                    elif base_date:
+                                        parts.append(f"{base_date}에 {title} 일정")
+                                    elif t:
+                                        parts.append(f"{t}에 {title} 일정")
+                                    else:
+                                        parts.append(f"{title} 일정")
+                                else:
+                                    if t:
+                                        parts.append(f"{t}에 {title} 일정")
+                                    else:
+                                        parts.append(f"{title} 일정")
+                            return ", ".join(parts) + "이 있어요."
+
+                        pieces = []
+                        for d, t, title in items:
+                            if d and t:
+                                segment = f"{d} {t}에 {title} 일정"
+                            elif d:
+                                segment = f"{d}에 {title} 일정"
+                            elif t:
+                                segment = f"{t}에 {title} 일정"
                             else:
-                                return f"{title} 일정이 있어요."
-                        return None
+                                segment = f"{title} 일정"
+                            pieces.append(segment)
+                        return ", ".join(pieces) + "이 있어요."
 
                     result = _query_with_fallback(
                         user_input=user_input,
@@ -2107,7 +3058,8 @@ def handle_query_with_lcel(user_input: str, memory_instance, session_id: str) ->
                     "모르면 정직하게 모른다고 답하세요."
                 )
                 resp = llm.invoke(prompt)
-                return resp.content.strip() if hasattr(resp, 'content') else str(resp).strip()
+                out = (resp.content or "") if hasattr(resp, 'content') else str(resp)
+                return (out.strip() or "해당 정보를 찾지 못했어요.")
             except Exception:
                 pass
 
@@ -2120,7 +3072,8 @@ def handle_query_with_lcel(user_input: str, memory_instance, session_id: str) ->
 
 자연스럽게 답변하세요."""
                 response = memory_instance.llm.invoke(prompt)
-                return response.content.strip()
+                out = (response.content or "") if hasattr(response, 'content') else str(response)
+                return (out.strip() or "해당 정보를 찾지 못했어요.")
 
         if user_name:
             conversations = memory_instance.get_excel_data(session_id, "대화")
@@ -2136,7 +3089,8 @@ def handle_query_with_lcel(user_input: str, memory_instance, session_id: str) ->
                     대화 기록과 관련 없는 일반적인 정보 조회는 하지 마세요.
                     """
                 response = memory_instance.llm.invoke(prompt)
-                return response.content.strip()
+                out = (response.content or "") if hasattr(response, 'content') else str(response)
+                return (out.strip() or "해당 정보를 찾지 못했어요.")
 
         mem_vars = memory_instance.conversation_memory.load_memory_variables({})
         history = mem_vars.get("history", "")
@@ -2152,7 +3106,8 @@ def handle_query_with_lcel(user_input: str, memory_instance, session_id: str) ->
                     대화의 흐름에 맞는 답변을 해주세요.
                     """
             response = memory_instance.llm.invoke(prompt)
-            return response.content.strip()
+            out = (response.content or "") if hasattr(response, 'content') else str(response)
+            return (out.strip() or "해당 정보를 찾지 못했어요.")
 
         return "아직 기록된 정보가 없어요. 알려주시면 기억해둘게요!"
 
@@ -2378,19 +3333,9 @@ def handle_cognitive_task_with_lcel(user_input: str, memory_instance, session_id
                         ])
 
                         if not has_other_info:
-
-                            when = None
-                            m_when = re.search(r"(아침|점심|저녁|밤|자기\s*전)", user_input)
-                            if m_when:
-                                when = m_when.group(1)
-                            user_name = memory_instance.user_names.get(session_id or "default")
-                            if user_name and user_name != "사용자":
-                                memory_instance.excel_manager.save_entity_data(user_name, "약", {
-                                    "약이름": med_kw.group(1),
-                                    "시간": when or "",
-                                })
-                                print(f"[DEBUG] 약 엔티티 규칙 기반 저장: {med_kw.group(1)} / {when or ''}")
-                                return f"{med_kw.group(1)} 복용 정보를 저장했어요."
+                            # 예전에는 여기서 바로 엑셀 저장과 응답을 했지만,
+                            # 아래 통합 약 처리 로직에서 한 번만 저장·응답하도록 변경.
+                            pass
                 except Exception:
                     pass
 
@@ -2441,15 +3386,33 @@ def handle_cognitive_task_with_lcel(user_input: str, memory_instance, session_id
                             normalized_date = _normalize_date_to_iso(date_str) if date_str else ""
                             user_name = memory_instance.user_names.get(session_id or "default")
                             if user_name and user_name != "사용자":
-                                memory_instance.excel_manager.save_entity_data(user_name, "일정", {
-                                    "제목": title,
-                                    "날짜": normalized_date,
-                                    "시간": time_str,
-                                    "장소": ""
-                                })
-                                print(f"[DEBUG] 일정 규칙 기반 저장: {date_str} {time_str} {title}")
-                                parts = " ".join(p for p in [date_str, time_str] if p)
-                                return f"{parts} {title} 예약(일정)으로 기록했어요.".strip()
+                                try:
+                                    from life_assist_dm.user_excel_manager import ScheduleConflictException
+                                    memory_instance.excel_manager.save_entity_data(user_name, "일정", {
+                                        "제목": title,
+                                        "날짜": normalized_date,
+                                        "시간": time_str,
+                                        "장소": ""
+                                    })
+                                    print(f"[DEBUG] 일정 규칙 기반 저장: {date_str} {time_str} {title}")
+                                    parts = " ".join(p for p in [date_str, time_str] if p)
+                                    return f"{parts} {title} 예약(일정)으로 기록했어요.".strip()
+                                except ScheduleConflictException as e:
+                                    # ✅ 일정 충돌: 사용자에게 재질문 (재질문 답 전까지 엑셀에 쓰지 않도록 일정 버퍼 비움)
+                                    existing = e.existing_schedule
+                                    new = e.new_schedule
+                                    existing_title = existing.get("제목", "일정")
+                                    new_title = new.get("제목", "일정")
+                                    msg = f"{date_str} {time_str}에 이미 '{existing_title}' 일정이 있어요. '{new_title}' 일정으로 바꿀까요, 아니면 두 일정을 합칠까요?"
+                                    memory_instance.pending_question[session_id] = {
+                                        "type": "schedule_conflict",
+                                        "existing_schedule": existing,
+                                        "new_schedule": new,
+                                        "question": msg
+                                    }
+                                    memory_instance.current_question[session_id] = msg
+                                    memory_instance.excel_manager._buffered_changes[(user_name, "일정")] = []
+                                    return msg
                 except Exception:
                     pass
 
@@ -2466,6 +3429,53 @@ def handle_cognitive_task_with_lcel(user_input: str, memory_instance, session_id
         if entities and isinstance(entities, dict):
             print(f"[DEBUG] 엔티티가 있어서 처리 시작")
             results = []
+            
+            # ✅ 동일 일정 엔티티(제목/날짜/시간)가 여러 번 추출되는 경우 중복 제거용
+            seen_schedule_entities = set()
+            # ✅ 동일 약 엔티티(약이름/시간/복용방법/복용기간)가 여러 번 추출되는 경우 중복 제거용
+            seen_medicine_entities = set()
+
+            # 🔹 user.약 엔티티가 여러 개 추출된 경우(LLM + rule-based 등)를 하나로 병합
+            #    같은 약 이름에 대해 시간/복용방법/복용기간 정보가 나뉘어 있을 수 있으므로,
+            #    비어 있지 않은 값을 우선으로 합쳐서 한 엔티티만 남긴다.
+            if entities and isinstance(entities, dict) and entities.get("user.약"):
+                merged_meds = {}
+                for e in entities["user.약"]:
+                    drug_name_merge = e.get("약이름") or e.get("약명") or e.get("이름") or ""
+                    key = (drug_name_merge or "").strip()
+                    if not key:
+                        continue
+                    base = merged_meds.get(key, {}).copy()
+                    for fk in ["약이름", "약명", "이름", "시간대", "시간", "용량", "단위", "복용방법", "복용기간", "날짜", "식사와의 관계"]:
+                        val = e.get(fk)
+                        if val is not None and str(val).strip() != "":
+                            base[fk] = val
+                    merged_meds[key] = base
+                entities["user.약"] = list(merged_meds.values())
+            
+            # ✅ 물건 위치 엔티티 후처리:
+            #    같은 발화에서 위치/물건이 뒤바뀐 엔티티가 함께 추출되는 경우
+            #    (예: "거실 매트 위에 에어팟 있어" → 에어팟, 거실 매트 둘 다 'user.물건'으로 잡힘)
+            #    → '위치' 필드에 장소/방향 키워드가 없는 엔티티는 물건으로 보지 않고 제거
+            for entity_key, entity_list in list(entities.items()):
+                if entity_key == "user.물건" and entity_list:
+                    loc_keywords = [
+                        "위에", "안에", "아래에", "옆에", "앞에", "뒤에",
+                        "주방", "거실", "침실", "방", "서랍", "찬장", "책상", "테이블", "식탁", "매트", "소파", "침대"
+                    ]
+                    has_loc_flags = []
+                    for e in entity_list:
+                        loc = str(e.get("위치", "") or "").strip()
+                        has_loc = any(kw in loc for kw in loc_keywords)
+                        has_loc_flags.append(has_loc)
+                    # 위치 키워드를 가진 엔티티와 갖지 않은 엔티티가 섞여 있으면,
+                    # 위치 키워드가 있는 쪽만 남기고 나머지는 제거
+                    if any(has_loc_flags) and not all(has_loc_flags):
+                        filtered = []
+                        for e, has_loc in zip(entity_list, has_loc_flags):
+                            if has_loc:
+                                filtered.append(e)
+                        entities[entity_key] = filtered
 
             for entity_key, entity_list in entities.items():
                 for entity in entity_list:
@@ -2503,7 +3513,7 @@ def handle_cognitive_task_with_lcel(user_input: str, memory_instance, session_id
                                     location_msg = sub_loc_clean
                                 else:
                                     location_msg = location
-                                results.append(f"'{name}'의 위치를 '{location_msg}'로 저장했어요.")
+                                results.append(f"{name}의 위치를 {location_msg}로 저장했어요.")
 
                                 try:
                                     if not hasattr(memory_instance, 'excel_cache'):
@@ -2514,7 +3524,7 @@ def handle_cognitive_task_with_lcel(user_input: str, memory_instance, session_id
                                 except Exception:
                                     pass
                             else:
-                                results.append(f"'{name}'의 위치를 '{location or place or sub_location}'로 저장했어요.")
+                                results.append(f"{name}의 위치를 {location or place or sub_location}로 저장했어요.")
                     elif entity_key == "user.건강상태":
 
                         emotion = entity.get("증상", "")
@@ -2623,6 +3633,17 @@ def handle_cognitive_task_with_lcel(user_input: str, memory_instance, session_id
                         time = entity.get("시간", "")
                         location = entity.get("장소", "")
 
+                        # 🔹 동일 제목/날짜/시간 일정이 두 번 이상 추출되었을 때 한 번만 처리
+                        try:
+                            norm_date = _normalize_date_to_iso(date) if date else ""
+                        except Exception:
+                            norm_date = str(date or "").strip()
+                        schedule_key = (str(title).strip(), norm_date, str(time).strip())
+                        if schedule_key in seen_schedule_entities:
+                            print(f"[DEBUG] 중복 일정 엔티티 스킵: {schedule_key}")
+                            continue
+                        seen_schedule_entities.add(schedule_key)
+
                         if str(title).lower() in ("nan", "none", ""):
                             title = ""
                         if str(date).lower() in ("nan", "none", ""):
@@ -2639,11 +3660,31 @@ def handle_cognitive_task_with_lcel(user_input: str, memory_instance, session_id
 
                             user_name = memory_instance.user_names.get(session_id or "default")
                             if user_name and user_name != "사용자":
-                                memory_instance.excel_manager.save_entity_data(user_name, "일정", {"제목": title or "", "날짜": normalized_date or "", "시간": time or "", "장소": location or ""})
-                                if title:
-                                    results.append(f"{title} 일정을 저장했어요.")
-                                else:
-                                    results.append(f"일정을 저장했어요.")
+                                try:
+                                    from life_assist_dm.user_excel_manager import ScheduleConflictException
+                                    memory_instance.excel_manager.save_entity_data(user_name, "일정", {"제목": title or "", "날짜": normalized_date or "", "시간": time or "", "장소": location or ""})
+                                    if title:
+                                        results.append(f"{title} 일정을 저장했어요.")
+                                    else:
+                                        results.append(f"일정을 저장했어요.")
+                                except ScheduleConflictException as e:
+                                    # ✅ 일정 충돌: 사용자에게 재질문 (재질문 답 전까지 엑셀에 쓰지 않도록 일정 버퍼 비움)
+                                    existing = e.existing_schedule
+                                    new = e.new_schedule
+                                    existing_title = existing.get("제목", "일정")
+                                    new_title = new.get("제목", "일정")
+                                    date_str = new.get("날짜", "")
+                                    time_str = new.get("시간", "")
+                                    msg = f"{date_str} {time_str}에 이미 '{existing_title}' 일정이 있어요. '{new_title}' 일정으로 바꿀까요, 아니면 두 일정을 합칠까요?"
+                                    memory_instance.pending_question[session_id] = {
+                                        "type": "schedule_conflict",
+                                        "existing_schedule": existing,
+                                        "new_schedule": new,
+                                        "question": msg
+                                    }
+                                    memory_instance.current_question[session_id] = msg
+                                    memory_instance.excel_manager._buffered_changes[(user_name, "일정")] = []
+                                    return msg
                             else:
                                 if title:
                                     results.append(f"{title} 일정을 저장했어요.")
@@ -2656,6 +3697,15 @@ def handle_cognitive_task_with_lcel(user_input: str, memory_instance, session_id
                         print(f"[DEBUG] 약 엔티티 저장 시도: {entity}")
                         drug_name = entity.get("약이름") or entity.get("약명") or entity.get("이름") or ""
 
+                        # 🔹 '운동약속', '병원약속'처럼 '약속/예약'에 붙은 '약'이
+                        #    약 엔티티로 잘못 인식되는 경우를 차단
+                        text_norm = (user_input or "").replace(" ", "")
+                        has_appointment_word = ("약속" in text_norm) or ("예약" in text_norm)
+                        has_medicine_verb = any(v in user_input for v in ["먹", "복용", "드셔", "먹어야", "복약"])
+                        if has_appointment_word and not has_medicine_verb:
+                            print(f"[DEBUG] 약 엔티티 무시 (약속/예약 문맥): {drug_name}, text={user_input}")
+                            continue
+
                         dose_time = entity.get("시간대", "") or entity.get("시간", "")
 
                         용량_값 = entity.get("용량", "")
@@ -2663,6 +3713,13 @@ def handle_cognitive_task_with_lcel(user_input: str, memory_instance, session_id
 
                         복용방법_값 = entity.get("복용방법", "")
                         복용기간_값 = entity.get("복용기간", "")
+                        
+                        # 🔹 같은 약 이름에 대해 한 번만 저장/응답 (이미 병합된 상태이므로 이름 기준으로만 중복 확인)
+                        med_key = (drug_name or "").strip()
+                        if med_key in seen_medicine_entities:
+                            print(f"[DEBUG] 약 엔티티 중복 감지, 저장/응답 생략: {med_key}")
+                            continue
+                        seen_medicine_entities.add(med_key)
 
                         if isinstance(entity.get("복용"), list):
                             time_list = []
@@ -2840,7 +3897,21 @@ def handle_cognitive_task_with_lcel(user_input: str, memory_instance, session_id
                             user_input=user_input
                         )
 
-            final_msg = "\n".join(results) if results else "말씀하신 내용을 기억해뒀습니다!"
+            # ✅ 동일 문장이 여러 번 results에 들어간 경우(예: 약 정보 저장 메시지 중복)를 제거
+            if results:
+                unique_results = []
+                seen_msgs = set()
+                for msg in results:
+                    norm = (msg or "").strip()
+                    if not norm:
+                        continue
+                    if norm in seen_msgs:
+                        continue
+                    seen_msgs.add(norm)
+                    unique_results.append(msg)
+                final_msg = "\n".join(unique_results) if unique_results else "말씀하신 내용을 기억해뒀습니다!"
+            else:
+                final_msg = "말씀하신 내용을 기억해뒀습니다!"
 
             다른_엔티티_저장됨 = bool(entities.get("user.일정") or entities.get("user.식사") or entities.get("user.물건") or entities.get("user.사용자"))
 
@@ -2873,7 +3944,8 @@ def handle_cognitive_task_with_lcel(user_input: str, memory_instance, session_id
                     위 맥락과 저장된 정보를 바탕으로 간단하고 자연스럽게 답변하세요.
                     """
             response = memory_instance.llm.invoke(prompt)
-            return response.content.strip()
+            out = (response.content or "") if hasattr(response, 'content') else str(response)
+            return (out.strip() or "해당 정보를 찾지 못했어요.")
 
         if any(keyword in user_input for keyword in ["가져", "갖다", "와", "가지고 와", "꺼내", "정리", "열어"]):
             from life_assist_dm.support_chains import handle_physical_task
@@ -2907,14 +3979,16 @@ def _query_with_fallback(user_input: str, memory_instance, session_id: str,
                           sheet_name: str, 
                           primary_search_func: callable,
                           query_type: str = "일반",
-                          lcel_prompt_template: str = None) -> Optional[str]:
+                          lcel_prompt_template: str = None,
+                          use_fallback: bool = True) -> Optional[str]:
     """
     통합 쿼리 검색 함수: 모든 쿼리 타입에 공통으로 적용
 
     검색 순서:
     1. 올바른 시트에서 찾기 (primary_search_func 호출)
-    2. 없으면 대화 기록 시트에서 찾기
-    3. 없으면 LCEL 참고하기
+    2. use_fallback이 True일 때만: 대화 기록 시트 → LCEL 참고
+
+    물건 위치는 시트만 신뢰 (use_fallback=False). 대화 기록에서 잘못된 물건이 섞여 나오는 것 방지.
 
     Args:
         user_input: 사용자 입력
@@ -2924,6 +3998,7 @@ def _query_with_fallback(user_input: str, memory_instance, session_id: str,
         primary_search_func: 1순위 검색 함수 (시트 데이터를 받아서 결과 반환)
         query_type: 쿼리 타입 ("약", "일정", "물건", "가족", "식사", "감정" 등)
         lcel_prompt_template: LCEL 검색용 프롬프트 템플릿 (None이면 기본 템플릿 사용)
+        use_fallback: False면 시트 검색만 하고, 없으면 None 반환 (물건 위치용)
 
     Returns:
         검색 결과 문자열 또는 None (없으면)
@@ -2935,8 +4010,16 @@ def _query_with_fallback(user_input: str, memory_instance, session_id: str,
 
         excel = memory_instance.excel_manager
 
+        if sheet_name == "물건위치":
+            excel_path = excel.get_user_excel_path(user_name)
+            logger.info(f"[물건위치] 사용자={user_name!r}, 읽는 파일={excel_path.resolve()}")
+
         try:
             df_sheet = excel.safe_load_sheet(user_name, sheet_name)
+            if sheet_name == "물건위치":
+                n_rows = len(df_sheet) if df_sheet is not None else 0
+                is_empty = df_sheet is None or df_sheet.empty
+                logger.info(f"[물건위치] 시트 행 수={n_rows}, 비어있음={is_empty}")
             if df_sheet is not None and not df_sheet.empty:
                 result = primary_search_func(df_sheet, user_input)
                 if result:
@@ -2944,6 +4027,9 @@ def _query_with_fallback(user_input: str, memory_instance, session_id: str,
                     return result
         except Exception as e:
             logger.debug(f"[QUERY] {query_type} 시트 검색 실패: {e}")
+
+        if not use_fallback:
+            return None
 
         try:
             df_conversation = excel.safe_load_sheet(user_name, "대화기록")

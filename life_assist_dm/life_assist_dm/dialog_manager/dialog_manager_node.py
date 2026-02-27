@@ -90,8 +90,7 @@ class DialogManager(Node):
         self.session_timeout = 180  # 3분 = 180초
 
         # ✅ launch 파라미터에서 preset_user_name 읽어 자동 로드
-        self.declare_parameter('preset_user_name', '')
-        preset_user_name = self.get_parameter('preset_user_name').get_parameter_value().string_value.strip()
+        preset_user_name = self.cfg.dm.preset_user_name
         if preset_user_name:
             session_id = "default_session"
             # session_id 불일치 방지: "default_session"과 "default" 둘 다 설정
@@ -141,65 +140,28 @@ class DialogManager(Node):
             session_id = "default_session"
             current_time = time.time()
             
-            # -1️⃣ 세션 타임아웃 체크 (사용자 이름 확인 후)
-            # 마지막 대화로부터 3분 이상 지났는지 확인 (단, 사용자 이름이 있는 경우에만)
-            if session_id in self.last_conversation_time and session_id in self.memory.user_names:
-                time_elapsed = current_time - self.last_conversation_time[session_id]
-                if time_elapsed > self.session_timeout:
-                    self.get_logger().info(f"[SESSION TIMEOUT] {time_elapsed:.1f}초 경과 - 세션 종료")
-                    
-                    # 대화 요약 저장
-                    try:
-                        user_name = self.memory.user_names.get(session_id)
-                        if user_name and user_name != "사용자":
-                            now = datetime.now()
-                            timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
-                            
-                            memory_vars = self.memory.conversation_memory.load_memory_variables({})
-                            history = memory_vars.get("history", "")
-                            
-                            if history:
-                                summary = f"{timestamp}: 세션 타임아웃(3분) - {history[:200] if len(history) > 200 else history}"
-                                self.memory.excel_manager.save_conversation_summary(user_name, summary)
-                                self.get_logger().info(f"대화 요약 저장 완료: {user_name}")
-                            
-                            # 타임아웃 시 버퍼 플러시
-                            try:
-                                self.memory.flush_memory_to_excel(session_id)
-                                self.get_logger().info(f"[FLUSH] 세션 타임아웃 - 데이터 엑셀로 저장 완료: {user_name}")
-                            except Exception as e:
-                                self.get_logger().warning(f"[FLUSH WARNING] 세션 타임아웃 flush 실패: {e}")
-                    except Exception as e:
-                        self.get_logger().warning(f"대화 요약 저장 실패: {e}")
-                    
-                    # 세션 초기화
-                    if session_id in self.memory.user_names:
-                        del self.memory.user_names[session_id]
-                    if session_id in self.user_name_status:
-                        del self.user_name_status[session_id]
-                    if session_id in self.last_conversation_time:
-                        del self.last_conversation_time[session_id]
-                    
-                    response.success = True
-                    response.answer = "세션이 3분 동안 대화가 없어 자동 종료되었습니다. 새로운 세션을 시작하려면 메시지를 보내주세요."
-                    response.act_type = "emotional"
-                    return response
-            
-            # 마지막 대화 시간 업데이트 (사용자 이름이 확인된 경우에만)
-            if session_id in self.memory.user_names:
-                self.last_conversation_time[session_id] = current_time
+            # ✅ 세션 타임아웃 기능 비활성화 (주석 처리)
+            # # -1️⃣ 세션 타임아웃 체크 (사용자 이름 확인 후)
+            # # 마지막 대화로부터 3분 이상 지났는지 확인 (단, 사용자 이름이 있는 경우에만)
+            # if session_id in self.last_conversation_time and session_id in self.memory.user_names:
+            #     time_elapsed = current_time - self.last_conversation_time[session_id]
+            #     if time_elapsed > self.session_timeout:
+            #         self.get_logger().info(f"[SESSION TIMEOUT] {time_elapsed:.1f}초 경과 - 세션 종료")
+            #         # 대화 요약 저장 및 플러시, 세션 초기화 로직은 현재 비활성화
+            #         response.success = True
+            #         response.answer = "세션이 3분 동안 대화가 없어 자동 종료되었습니다. 새로운 세션을 시작하려면 메시지를 보내주세요."
+            #         response.act_type = "emotional"
+            #         return response
+            #
+            # # 마지막 대화 시간 업데이트 (사용자 이름이 확인된 경우에만)
+            # if session_id in self.memory.user_names:
+            #     self.last_conversation_time[session_id] = current_time
             
             # 1️⃣ pending_question 체크 - 이전 질문에 대한 답변이 있는지 확인
-            # 새 명령인지 확인 (물건+위치 패턴이 있으면 새 명령, 또는 명시적 새 정보 제공)
-            is_new_command = any(keyword in user_text for keyword in [
-                "에 있어", "에 있어.", "에서",  # 명확한 위치 표현 (마침표 포함)
-                "가져", "갖다", "가져와",  # 가져오기 명령 (공백 제거)
-                "찾아", "정리", "꺼내",  # 기타 명령
-                "이름", "약", "일정", "약속",  # 새 정보 제공
-            ])
-            
-            if hasattr(self.memory, 'pending_question') and session_id in self.memory.pending_question and not is_new_command:
-                # 새 명령이 아니면 pending_question 처리
+            #    한 번 pending 상태에 들어가면, 다음 발화는 내용과 상관없이 우선적으로
+            #    pending_answer로 처리하고, 그 안에서 다시 필요한 질문/저장을 이어간다.
+            if hasattr(self.memory, 'pending_question') and session_id in self.memory.pending_question:
+                # 이전 턴에서 "위치를 알려주시면 기억해둘게요." 등의 질문이 있었던 경우
                 self.get_logger().info(f"[PENDING] 처리 시작: {self.memory.pending_question[session_id]}")
                 from life_assist_dm.support_chains import handle_pending_answer
                 answer = handle_pending_answer(user_text, self.memory, session_id)
@@ -207,11 +169,35 @@ class DialogManager(Node):
                     response.success = answer.get('success', True)
                     response.answer = answer.get('message', str(answer))
                     response.act_type = "physical"  # pending_question은 주로 physical
+                    # 로봇 전달용 영어 명령은 response.robot_command에만 담기 (answer에는 넣지 않음)
+                    robot_cmd = answer.get('robot_command')
+                    if hasattr(response, 'robot_command'):
+                        if robot_cmd is not None:
+                            import json
+                            response.robot_command = json.dumps(robot_cmd, ensure_ascii=False) if isinstance(robot_cmd, dict) else str(robot_cmd)
+                        else:
+                            response.robot_command = ""
                 else:
                     response.success = True
                     response.answer = str(answer)
                     response.act_type = "physical"
+                    if hasattr(response, 'robot_command'):
+                        response.robot_command = ""
                 self.get_logger().info(f"[PENDING] 처리 완료: {answer}")
+
+                # ✅ pending 답변 처리 후에도 엑셀 버퍼에 남은 변경 사항이 있으면 flush
+                try:
+                    user_name_log = self.memory.user_names.get(session_id)
+                    if user_name_log and user_name_log != "사용자":
+                        if hasattr(self.memory.excel_manager, "_buffered_changes"):
+                            buffered_changes = self.memory.excel_manager._buffered_changes
+                            has_changes = any(uname == user_name_log for uname, _ in buffered_changes.keys())
+                            if has_changes:
+                                self.memory.flush_memory_to_excel(session_id)
+                                self.get_logger().debug(f"[FLUSH] pending 처리 후 세션({session_id}) 데이터 엑셀로 저장 완료")
+                except Exception as e:
+                    self.get_logger().warning(f"[FLUSH WARNING] pending 처리 후 엑셀 flush 실패: {e}")
+
                 return response
             
             user_name = self.memory.user_names.get(session_id)
@@ -221,15 +207,33 @@ class DialogManager(Node):
             # 아래 "if not user_name:" 조건을 자연스럽게 통과함 (질문 로직 진입 안 함)
             # preset_user_name이 없거나 비어있을 경우 아래 기존 로직이 그대로 동작함
             if not user_name:
-
-                self.get_logger().info(f"[NAME REQUEST] 사용자 이름 없음 - 분류 건너뛰기")
-                if self.user_name_status.get(session_id) != "asking":
-                    self.user_name_status[session_id] = "asking"
-                    response.success = True
-                    response.answer = "안녕하세요! 대화 시작 전에 우선 지금 말씀 중인 사용자 분 이름을 말해주세요!"
-                    response.act_type = "emotional"
-                    self.get_logger().info(f"[NAME REQUEST] 이름 물어보기: {user_text}")
-                    return response
+                # ✅ preset_user_name이 있으면 자동으로 재설정 (세션 타임아웃 후 복구)
+                if hasattr(self, 'preset_user_name') and self.cfg.dm.preset_user_name:
+                    preset_user_name = self.cfg.dm.preset_user_name
+                    self.memory.user_names[session_id] = preset_user_name
+                    self.memory.user_names["default"] = preset_user_name
+                    self.user_name_status[session_id] = "confirmed"
+                    self.user_name_status["default"] = "confirmed"
+                    excel_manager = self.memory.excel_manager
+                    if not excel_manager.user_exists(preset_user_name):
+                        excel_manager.initialize_user_excel(preset_user_name)
+                    else:
+                        try:
+                            self.memory.load_user_data_from_excel(preset_user_name, session_id)
+                        except Exception as e:
+                            self.get_logger().warning(f"[PRESET USER] 엑셀 데이터 로딩 실패: {e}")
+                    self.get_logger().info(f"[PRESET USER] 사용자 자동 재설정: {preset_user_name}")
+                    user_name = preset_user_name  # user_name 업데이트하여 아래 로직 통과
+                
+                if not user_name:  # preset_user_name도 없으면 이름 요청
+                    self.get_logger().info(f"[NAME REQUEST] 사용자 이름 없음 - 분류 건너뛰기")
+                    if self.user_name_status.get(session_id) != "asking":
+                        self.user_name_status[session_id] = "asking"
+                        response.success = True
+                        response.answer = "안녕하세요! 대화 시작 전에 우선 지금 말씀 중인 사용자 분 이름을 말해주세요!"
+                        response.act_type = "emotional"
+                        self.get_logger().info(f"[NAME REQUEST] 이름 물어보기: {user_text}")
+                        return response
                 
                 if self.user_name_status.get(session_id) == "asking":
 
@@ -341,6 +345,21 @@ class DialogManager(Node):
                         return response
 
             if user_text.strip().endswith("?") or any(k in user_text for k in ["기억", "알고", "알아"]):
+                # 🔹 "내 이름이 뭐야?" 같은 자기 이름 질문은 LLM/가족관계 시트 대신
+                #    현재 세션에서 사용 중인 사용자 이름(엑셀 파일 이름)을 그대로 사용
+                lowered = user_text.replace(" ", "").lower()
+                is_self_name_question = (
+                    ("내이름" in lowered or "내이름이" in lowered or "제이름" in lowered)
+                    and ("뭐야" in lowered or "뭐지" in lowered or "알려줘" in lowered or "가르쳐줘" in lowered)
+                )
+                if is_self_name_question:
+                    user_name_for_answer = self.memory.user_names.get(session_id) or self.memory.user_names.get("default")
+                    if user_name_for_answer and user_name_for_answer != "사용자":
+                        response.success = True
+                        response.answer = f"지금 사용자분 이름은 {user_name_for_answer}이에요."
+                        response.act_type = "query"
+                        return response
+
                 from life_assist_dm.support_chains import handle_query_with_lcel
                 answer = handle_query_with_lcel(user_text, self.memory, session_id)
                 response.success = True
@@ -370,6 +389,7 @@ class DialogManager(Node):
                 return response
 
             answer_parts = []
+            robot_command_for_response = ""  # physical 시 로봇에게 넘길 영어 명령 (JSON 문자열)
             processed_physical = False
             emotion_saved_in_this_turn = False
 
@@ -381,7 +401,7 @@ class DialogManager(Node):
                     if q_guard:
                         from life_assist_dm.support_chains import handle_query_with_lcel
                         answer = handle_query_with_lcel(user_text, self.memory, session_id)
-                        answer_parts.append(str(answer))
+                        answer_parts.append(str(answer) if answer is not None else "해당 정보를 찾지 못했어요.")
                         continue
 
                     from life_assist_dm.support_chains import handle_cognitive_task_with_lcel
@@ -412,19 +432,12 @@ class DialogManager(Node):
                         self.get_logger().info(f"[PHYSICAL RESULT] {physical_result}")
 
                         if isinstance(physical_result, dict):
-                            message = physical_result.get('message', str(physical_result))
-                            robot_cmd = physical_result.get('robot_command')
-                            
-                            # robot_command가 있으면 영어 명령을 메시지에 추가
-                            if robot_cmd:
-                                import json
-                                try:
-                                    cmd_str = json.dumps(robot_cmd, ensure_ascii=False)
-                                    message = f"{message} [Robot Command: {cmd_str}]"
-                                except Exception:
-                                    message = f"{message} [Robot Command: {str(robot_cmd)}]"
-                            
+                            message = physical_result.get('message') or str(physical_result) or "처리 결과를 생성하지 못했어요."
                             answer_parts.append(message)
+                            cmd = physical_result.get('robot_command')
+                            if cmd is not None:
+                                import json
+                                robot_command_for_response = json.dumps(cmd, ensure_ascii=False) if isinstance(cmd, dict) else str(cmd)
                         else:
                             answer_parts.append(str(physical_result))
                     except Exception as e:
@@ -474,15 +487,31 @@ class DialogManager(Node):
 
             response.success = True
 
-            if not answer_parts:
-                answer_parts.append("처리 완료했어요.")
+            # ✅ 중복 응답 제거 (같은 문장이 여러 번 붙는 문제 방지)
+            unique_parts = []
+            seen = set()
+            for part in answer_parts:
+                text = (part or "").strip()
+                if not text:
+                    continue
+                # 공백 차이로 인한 중복도 제거 (정규식 대신 split/join 사용)
+                norm_text = " ".join(text.split())
+                if norm_text in seen:
+                    continue
+                seen.add(norm_text)
+                unique_parts.append(part)
 
-            safe_answer = " ".join(answer_parts)
+            if not unique_parts:
+                unique_parts.append("처리 완료했어요.")
+
+            safe_answer = " ".join(unique_parts)
 
             safe_answer = _filter_safety_apology(safe_answer)
             safe_answer = safe_answer.replace('"', '＂').replace("'", "＇")
             response.answer = safe_answer
             response.act_type = ",".join(act_types)
+            if hasattr(response, 'robot_command'):
+                response.robot_command = robot_command_for_response if robot_command_for_response else ""
 
             self.get_logger().info(f"[RESPONSE] 최종 응답: {response.answer}")
 
@@ -519,9 +548,10 @@ class DialogManager(Node):
 
             self.get_logger().error(f"[ERROR] {tb}")
             response.success = False
-
             response.answer = "죄송해요, 처리 중 오류가 발생했어요. 잠시 후 다시 시도해 주세요."
             response.act_type = "unknown"
+            if hasattr(response, 'robot_command'):
+                response.robot_command = ""
 
         return response
 

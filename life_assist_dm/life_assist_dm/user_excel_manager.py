@@ -11,6 +11,33 @@ import time
 logger = logging.getLogger(__name__)
 
 import json
+import re
+
+
+def _normalize_schedule_title(title: str) -> str:
+    """제목 비교용: strip 후 연속 공백을 하나로. '미용실  예약' == '미용실 예약' """
+    if not title or not isinstance(title, str):
+        return ""
+    return re.sub(r"\s+", " ", title.strip())
+
+
+def _normalize_date_for_compare(date_val: str) -> str:
+    """날짜 비교용: '2026-02-26 00:00:00' 또는 '2026-02-26' -> '2026-02-26' """
+    if not date_val:
+        return ""
+    s = str(date_val).strip()
+    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+        return s[:10]
+    return s
+
+
+class ScheduleConflictException(Exception):
+    """일정 충돌 예외: 날짜+시간이 같은데 제목이 다른 일정이 있을 때 발생"""
+    def __init__(self, existing_schedule: Dict[str, Any], new_schedule: Dict[str, Any], user_name: str):
+        self.existing_schedule = existing_schedule
+        self.new_schedule = new_schedule
+        self.user_name = user_name
+        super().__init__(f"일정 충돌: {existing_schedule.get('제목', '')} vs {new_schedule.get('제목', '')}")
 
 SHEET_SCHEMAS = {
     "물건위치": ["날짜", "물건이름", "장소", "세부위치", "출처", "엔티티타입"],
@@ -23,23 +50,42 @@ SHEET_SCHEMAS = {
     "대화기록": ["날짜", "시간", "대화요약"],
 }
 
-def _get_package_dir():
+def _get_package_dir() -> Path:
+    """user_excel_manager.py와 같은 패키지 디렉터리 (user_information 상위)"""
     current_file = Path(__file__).resolve()
+    return current_file.parent
 
-    package_dir = current_file.parent.parent
-    return package_dir
+
+def _get_user_information_dir() -> Path:
+    """
+    불러오기·저장 모두 소스 트리의 user_information 한 경로로 통일.
+    - install 실행 시: .../src/life_assist_dm/life_assist_dm/user_information
+    - 소스 실행 시: .../life_assist_dm/life_assist_dm/user_information
+    """
+    current_file = Path(__file__).resolve()
+    parts = current_file.parts
+
+    # install 공간에서 실행 중이면 workspace/src/.../user_information 로 맞춤
+    if "install" in parts:
+        idx = parts.index("install")
+        workspace = Path(*parts[:idx])
+        source_user_info = workspace / "src" / "life_assist_dm" / "life_assist_dm" / "user_information"
+        return source_user_info.resolve()
+
+    # 소스에서 실행 시: 이 파일 옆의 user_information
+    return (_get_package_dir() / "user_information").resolve()
+
 
 class UserExcelManager:
-    
-    def __init__(self, base_dir: str = None):
-        if base_dir is None:
+    """엑셀 로드/저장은 반드시 user_information 디렉터리 한 곳에서만 수행."""
 
-            package_dir = _get_package_dir()
-            self.base_dir = package_dir / "user_information"
+    def __init__(self, base_dir: str = None):
+        if base_dir is not None and str(base_dir).strip():
+            self.base_dir = Path(os.path.expanduser(base_dir)).resolve()
         else:
-            self.base_dir = Path(os.path.expanduser(base_dir))
+            self.base_dir = _get_user_information_dir()
         self.base_dir.mkdir(parents=True, exist_ok=True)
-        logger.debug(f"엑셀 파일 저장 경로: {self.base_dir}")
+        logger.info(f"엑셀 경로 [user_information]: {self.base_dir}")
 
         self._buffered_changes = defaultdict(list)
 
@@ -225,8 +271,8 @@ class UserExcelManager:
         start_date = datetime.now()
         end_date = start_date + timedelta(days=days_to_add - 1)
         
-        start_str = start_date.strftime("%Y-%m-%d")
-        end_str = end_date.strftime("%Y-%m-%d")
+        start_str = start_date.strftime("%Y-%m-%d %H:%M:%S")
+        end_str = end_date.strftime("%Y-%m-%d %H:%M:%S")
         return f"{start_str}~{end_str}"
     
     def _normalize_entity(self, entity_type: str, data: dict) -> dict:
@@ -234,7 +280,23 @@ class UserExcelManager:
         try:
             if entity_type in ["물건", "user.물건"]:
 
-                norm["물건이름"] = data.get("물건이름") or data.get("이름", "")
+                # 원본 이름
+                raw_name = data.get("물건이름") or data.get("이름", "")
+                if isinstance(raw_name, str):
+                    name = raw_name.strip()
+                    # LLM 포맷에서 온 "치약, location: null" 같은 노이즈 제거
+                    # - ", location: null" 전체 제거
+                    # - "location: ..." 패턴이 섞여 있으면 그 앞까지를 물건 이름으로 사용
+                    lower = name.lower()
+                    if "location:" in lower:
+                        # 쉼표 기준 앞부분만 사용 (예: "치약, location: null" → "치약")
+                        name = name.split("location:")[0].rstrip(", ").strip()
+                    # 혹시 남아 있을 수 있는 "null" 토큰 제거
+                    if name.lower().endswith("null"):
+                        name = name[:-4].rstrip(", ").strip()
+                    norm["물건이름"] = name
+                else:
+                    norm["물건이름"] = str(raw_name) if raw_name is not None else ""
 
                 norm["장소"] = str(data.get("장소", "")).strip()
                 norm["세부위치"] = str(data.get("세부위치", "")).strip()
@@ -310,6 +372,7 @@ class UserExcelManager:
                         from life_assist_dm.support_chains import _normalize_date_to_iso
                         date_str = str(date_value).strip()
                         if date_str and date_str.lower() not in ("nan", "none", ""):
+                            # 일정 시트는 날짜 컬럼을 날짜(YYYY-MM-DD)만 유지
                             norm["날짜"] = _normalize_date_to_iso(date_str)
                         else:
                             norm["날짜"] = ""
@@ -335,16 +398,17 @@ class UserExcelManager:
                         from life_assist_dm.support_chains import _normalize_date_to_iso
                         date_str = str(date_value).strip()
                         if date_str and date_str.lower() not in ("nan", "none", ""):
-                            norm["날짜"] = _normalize_date_to_iso(date_str)
+                            base = _normalize_date_to_iso(date_str)
+                            norm["날짜"] = f"{base} 00:00:00"
                         else:
 
-                            norm["날짜"] = datetime.now().strftime("%Y-%m-%d")
+                            norm["날짜"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     except Exception as e:
                         logger.warning(f"날짜 정규화 실패: {e}, 원본 값 사용: {date_value}")
                         norm["날짜"] = str(date_value) if date_value else ""
                 else:
 
-                    norm["날짜"] = datetime.now().strftime("%Y-%m-%d")
+                    norm["날짜"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             elif entity_type == "정서" or entity_type == "감정":
                 norm["감정"] = data.get("감정") or data.get("상태") or data.get("증상", "")
                 norm["정보"] = data.get("정보", "") or data.get("원문", "")
@@ -371,7 +435,10 @@ class UserExcelManager:
         if not user_name or not str(user_name).strip() or user_name == "사용자":
             logger.warning(f"[WARN] 잘못된 사용자명으로 저장 시도: {user_name}")
             return
-        
+        if entity_type is None or (isinstance(entity_type, str) and entity_type.strip() in ("", "None")):
+            logger.warning(f"[WARN] entity_type이 비어 있어 저장 생략: {entity_type!r}")
+            return
+
         try:
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             sheet_name = self._get_sheet_name(entity_type)
@@ -481,10 +548,31 @@ class UserExcelManager:
             normalized = self._normalize_entity(entity_type, data)
 
             date_value = normalized.get("날짜", "")
-            if not date_value or str(date_value).strip() == "" or str(date_value).lower() in ("nan", "none"):
-                normalized["날짜"] = now.split()[0]
+            if sheet_name == "일정":
+                # 일정 시트: '발화 시각'이 아닌 '일정 날짜'만 저장
+                # - 발화에서 날짜가 추출된 경우에만 YYYY-MM-DD로 저장
+                # - 날짜가 전혀 없으면 빈 값으로 두어, 사용자가 나중에 보거나 수정할 때도
+                #   "언제 하는 일정인지 모르는 일정"으로 명확히 보이게 함
+                if date_value and str(date_value).strip().lower() not in ("nan", "none"):
+                    dv = str(date_value).strip()
+                    # 혹시 datetime 형태가 들어오면 앞의 날짜 부분만 사용
+                    if len(dv) >= 10 and dv[4] == "-" and dv[7] == "-":
+                        normalized["날짜"] = dv[:10]
+                    else:
+                        normalized["날짜"] = dv
+                else:
+                    normalized["날짜"] = ""
             else:
-                normalized["날짜"] = str(date_value).strip()
+                if not date_value or str(date_value).strip() == "" or str(date_value).lower() in ("nan", "none"):
+                    # 기본은 항상 YYYY-MM-DD HH:MM:SS 포맷
+                    normalized["날짜"] = now
+                else:
+                    dv = str(date_value).strip()
+                    # YYYY-MM-DD 형태만 들어온 경우에는 시간 00:00:00을 붙여서 통일
+                    if len(dv) == 10 and dv[4] == "-" and dv[7] == "-":
+                        normalized["날짜"] = f"{dv} 00:00:00"
+                    else:
+                        normalized["날짜"] = dv
             normalized["엔티티타입"] = entity_type
             
             schema = SHEET_SCHEMAS.get(sheet_name, SHEET_SCHEMAS["사용자정보KV"])
@@ -502,11 +590,125 @@ class UserExcelManager:
                 logger.debug(f"[SAVE DEBUG] 물건 저장 - record: {record}")
             
             buffer_key = (user_name, sheet_name)
-            self._buffered_changes[buffer_key].append(record)
-
-            logger.info(f"[BUFFER] {user_name}:{sheet_name} 엔티티 버퍼링됨 ({entity_type})")
+            
+            # ✅ 일정 중복 저장 방지: 날짜 + 제목 + 시간 + 장소가 모두 같으면 중복
+            if entity_type in ["일정", "user.일정"]:
+                # 버퍼에서 중복 확인
+                existing_buffer = self._buffered_changes.get(buffer_key, [])
+                duplicate_found = False
+                
+                record_date = record.get("날짜", "").strip()
+                record_title = record.get("제목", "").strip()
+                record_time = record.get("시간", "").strip()
+                record_location = record.get("장소", "").strip()
+                record_date_norm = _normalize_date_for_compare(record_date)
+                record_title_norm = _normalize_schedule_title(record_title)
+                
+                for i, existing_record in enumerate(existing_buffer):
+                    existing_date = str(existing_record.get("날짜", "")).strip()
+                    existing_title = str(existing_record.get("제목", "")).strip()
+                    existing_time = str(existing_record.get("시간", "")).strip()
+                    existing_location = str(existing_record.get("장소", "")).strip()
+                    existing_date_norm = _normalize_date_for_compare(existing_date)
+                    existing_title_norm = _normalize_schedule_title(existing_title)
+                    
+                    # 날짜(일만), 제목(공백 정규화), 시간, 장소가 모두 같으면 중복
+                    if (record_date_norm == existing_date_norm and 
+                        record_title_norm == existing_title_norm and 
+                        record_time == existing_time and 
+                        record_location == existing_location):
+                        # 기존 레코드를 새 것으로 교체
+                        existing_buffer[i] = record
+                        duplicate_found = True
+                        logger.info(f"[DUPLICATE] 일정 중복 발견 - 기존 레코드 교체: {record_title} ({record_date} {record_time})")
+                        break
+                
+                if duplicate_found:
+                    # 버퍼 업데이트 (이미 교체됨)
+                    self._buffered_changes[buffer_key] = existing_buffer
+                    logger.info(f"[BUFFER] {user_name}:{sheet_name} 일정 중복 방지 - 기존 레코드 교체됨 ({entity_type})")
+                else:
+                    # ✅ 날짜+시간 충돌 확인 (제목이 다른 경우)
+                    conflict_found = False
+                    conflict_existing = None
+                    
+                    # 버퍼에서 날짜+시간 충돌 확인 (날짜는 일만, 제목은 공백 정규화 후 비교)
+                    for existing_record in existing_buffer:
+                        existing_date = str(existing_record.get("날짜", "")).strip()
+                        existing_time = str(existing_record.get("시간", "")).strip()
+                        existing_title = str(existing_record.get("제목", "")).strip()
+                        existing_date_norm = _normalize_date_for_compare(existing_date)
+                        existing_title_norm = _normalize_schedule_title(existing_title)
+                        
+                        # 날짜+시간이 같고, 정규화한 제목이 다를 때만 충돌
+                        if (record_date_norm == existing_date_norm and 
+                            record_time == existing_time and 
+                            record_title_norm != existing_title_norm):
+                            conflict_found = True
+                            conflict_existing = existing_record
+                            logger.info(f"[SCHEDULE CONFLICT] 버퍼에서 충돌 발견: {existing_title} vs {record_title} ({record_date} {record_time})")
+                            break
+                    
+                    # 엑셀 파일에서도 날짜+시간 충돌 확인
+                    if not conflict_found:
+                        try:
+                            df_existing = self.load_sheet_data(user_name, sheet_name)
+                            if df_existing is not None and not df_existing.empty:
+                                for _, row in df_existing.iterrows():
+                                    existing_date = str(row.get("날짜", "")).strip()
+                                    existing_title = str(row.get("제목", "")).strip()
+                                    existing_time = str(row.get("시간", "")).strip()
+                                    existing_location = str(row.get("장소", "")).strip()
+                                    existing_date_norm = _normalize_date_for_compare(existing_date)
+                                    existing_title_norm = _normalize_schedule_title(existing_title)
+                                    
+                                    # 날짜(일만)+제목(정규화)+시간+장소가 모두 같으면 완전 중복 (저장 안 함)
+                                    if (record_date_norm == existing_date_norm and 
+                                        record_title_norm == existing_title_norm and 
+                                        record_time == existing_time and 
+                                        record_location == existing_location):
+                                        logger.info(f"[DUPLICATE] 일정 중복 발견 (엑셀) - 저장 건너뜀: {record_title} ({record_date} {record_time})")
+                                        return  # 저장하지 않고 종료
+                                    
+                                    # 날짜+시간이 같고 정규화한 제목이 다를 때만 충돌
+                                    if (record_date_norm == existing_date_norm and 
+                                        record_time == existing_time and 
+                                        record_title_norm != existing_title_norm):
+                                        conflict_found = True
+                                        conflict_existing = {
+                                            "날짜": existing_date,
+                                            "제목": existing_title,
+                                            "시간": existing_time,
+                                            "장소": existing_location,
+                                            "정보": str(row.get("정보", "")).strip()
+                                        }
+                                        logger.info(f"[SCHEDULE CONFLICT] 엑셀에서 충돌 발견: {existing_title} vs {record_title} ({record_date} {record_time})")
+                                        break
+                        except Exception as e:
+                            logger.debug(f"[DUPLICATE CHECK] 엑셀 중복 확인 실패 (무시): {e}")
+                    
+                    # ✅ 충돌이 있으면 예외 발생 (호출하는 쪽에서 처리)
+                    if conflict_found:
+                        from life_assist_dm.user_excel_manager import ScheduleConflictException
+                        raise ScheduleConflictException(
+                            existing_schedule=conflict_existing,
+                            new_schedule=record,
+                            user_name=user_name
+                        )
+                    
+                    # 중복이 없으면 버퍼에 추가
+                    self._buffered_changes[buffer_key].append(record)
+                    logger.info(f"[BUFFER] {user_name}:{sheet_name} 엔티티 버퍼링됨 ({entity_type})")
+            else:
+                # 일정이 아닌 경우 기존 로직대로 추가
+                self._buffered_changes[buffer_key].append(record)
+                logger.info(f"[BUFFER] {user_name}:{sheet_name} 엔티티 버퍼링됨 ({entity_type})")
+            
             logger.debug(f"[BUFFER DEBUG] 버퍼링 직후 - 버퍼 키: {buffer_key}, 레코드 수: {len(self._buffered_changes[buffer_key])}")
             
+        except ScheduleConflictException:
+            # 일정 충돌은 호출한 쪽에서 처리해야 하므로 그대로 전달
+            raise
         except Exception as e:
             logger.error(f"[ERROR] save_entity_data 실패: {e}")
             import traceback
@@ -519,7 +721,7 @@ class UserExcelManager:
             timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
         
         record = {
-            "날짜": timestamp.split()[0],
+            "날짜": timestamp,
             "시간": timestamp.split()[1] if len(timestamp.split()) > 1 else "",
             "대화요약": summary,
             "엔티티타입": "대화기록"
@@ -657,6 +859,51 @@ class UserExcelManager:
                 else:
                     df_all = df_new
 
+                # ✅ 일정 시트 처리:
+                #   - 중복 제거: 날짜(일만) + 제목(공백 정규화) + 시간 + 장소가 같으면 중복
+                #   - '날짜' 컬럼은 발화 시간이 아닌 '일정 날짜(YYYY-MM-DD)'만 저장
+                if sheet_name == "일정" and not df_all.empty:
+                    try:
+                        if all(col in df_all.columns for col in ["날짜", "제목", "시간", "장소"]):
+                            for col in ["날짜", "제목", "시간", "장소"]:
+                                df_all[col] = df_all[col].fillna("").astype(str).str.strip()
+                            # 제목 공백 정규화 / 날짜(일만) 비교용 컬럼
+                            df_all["_제목_norm"] = df_all["제목"].apply(lambda x: _normalize_schedule_title(str(x)))
+                            df_all["_날짜_norm"] = df_all["날짜"].apply(lambda x: _normalize_date_for_compare(str(x)))
+
+                            # 🔹 과거 버그로 인해 같은 제목/시간/장소인데 날짜가 비어 있는 행과 채워진 행이 같이 있는 경우
+                            #    → 날짜가 채워진 행만 남기고, 비어 있는 행은 정리
+                            try:
+                                to_drop_idx = []
+                                group_cols = ["_제목_norm", "시간", "장소"]
+                                for _, group in df_all.groupby(group_cols, dropna=False):
+                                    has_non_empty = (group["_날짜_norm"] != "").any()
+                                    has_empty = (group["_날짜_norm"] == "").any()
+                                    if has_non_empty and has_empty:
+                                        empty_idx = group.index[group["_날짜_norm"] == ""].tolist()
+                                        to_drop_idx.extend(empty_idx)
+                                if to_drop_idx:
+                                    df_all = df_all.drop(index=to_drop_idx)
+                            except Exception:
+                                pass
+
+                            # 정렬은 datetime으로 하되, 최종 저장은 '_날짜_norm'(YYYY-MM-DD 또는 빈 문자열)만 유지
+                            if "_날짜_norm" in df_all.columns:
+                                _dt = pd.to_datetime(df_all["_날짜_norm"], errors="coerce")
+                                df_all = df_all.assign(_날짜_dt=_dt)
+                                df_all = df_all.sort_values("_날짜_dt", na_position="last")
+
+                            df_all = df_all.drop_duplicates(subset=["_날짜_norm", "_제목_norm", "시간", "장소"], keep="last")
+
+                            # 최종적으로 '날짜'는 '_날짜_norm'(YYYY-MM-DD 또는 빈 문자열)로 저장
+                            if "날짜" in df_all.columns and "_날짜_norm" in df_all.columns:
+                                df_all["날짜"] = df_all["_날짜_norm"]
+                            df_all = df_all.drop(columns=["_제목_norm", "_날짜_norm", "_날짜_dt"], errors="ignore")
+
+                            logger.debug(f"[DUPLICATE CHECK] 일정 중복 제거 및 날짜 형식 정리 완료: {len(df_all)}개 레코드")
+                    except Exception as e:
+                        logger.warning(f"[DUPLICATE CHECK] 일정 중복 제거/날짜 정리 실패: {e}")
+                
                 if sheet_name == "물건위치" and not df_all.empty:
                     try:
                         # 동일 물건에 대해 가장 최신 위치만 유지

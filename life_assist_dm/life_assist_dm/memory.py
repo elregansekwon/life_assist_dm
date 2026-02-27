@@ -461,13 +461,82 @@ class LifeAssistMemory:
             print(f"[ERROR] get_location 실패: {e}")
             return None
 
+    def get_all_items_by_name(self, target: str, partial_match: bool = True) -> List[dict]:
+        """물건 이름으로 모든 물건 검색 (부분 일치 지원)
+        
+        Args:
+            target: 검색할 물건 이름 (예: "컵")
+            partial_match: True면 부분 일치, False면 정확히 일치
+                          부분 일치 시: "컵" → "컵", "빨간 컵", "노란 컵" 모두 찾음
+                                       "빨간 컵" → "빨간 컵"만 찾음 (짧은 단어가 긴 단어에 포함되지 않도록)
+            
+        Returns:
+            물건 정보 리스트 [{"이름": "빨간 컵", "위치": "주방", ...}, ...]
+        """
+        try:
+            session_id = "default_session"
+            results = []
+
+            target_raw = (target or "").strip()
+            target_ns = target_raw.replace(" ", "")
+
+            if not target_ns:
+                return results
+
+            user_name = self.user_names.get(session_id)
+            if not user_name:
+                return results
+
+            df = self.excel_manager.load_sheet_data(user_name, "물건위치")
+            if df is None or df.empty:
+                return results
+
+            for _, row in df.iloc[::-1].iterrows():
+                name_v = str(row.get("물건이름", "") or row.get("이름", "")).strip()
+                if not name_v:
+                    continue
+                name_ns = name_v.replace(" ", "")
+
+                # 정확히 일치 (공백 유무 무시)
+                if name_v == target_raw or name_ns == target_ns:
+                    item_info = {
+                        "이름": name_v,
+                        "위치": str(row.get("위치", "") or "").strip(),
+                        "장소": str(row.get("장소", "") or "").strip(),
+                        "세부위치": str(row.get("세부위치", "") or "").strip(),
+                    }
+                    if item_info["위치"] or item_info["장소"] or item_info["세부위치"]:
+                        results.append(item_info)
+                # 부분 일치 (긴 단어 안에 짧은 단어가 포함되는 경우만, 공백 무시)
+                elif partial_match:
+                    # target_ns가 name_ns 안에 포함될 때만 인정
+                    # 예: target="컵"(ns="컵"), name_v="빨간 컵"(ns="빨간컵") → match
+                    #     target="빨간 컵"(ns="빨간컵"), name_v="컵"(ns="컵") → 불일치 (반대 방향)
+                    if target_ns in name_ns:
+                        item_info = {
+                            "이름": name_v,
+                            "위치": str(row.get("위치", "") or "").strip(),
+                            "장소": str(row.get("장소", "") or "").strip(),
+                            "세부위치": str(row.get("세부위치", "") or "").strip(),
+                        }
+                        if item_info["위치"] or item_info["장소"] or item_info["세부위치"]:
+                            results.append(item_info)
+
+            return results
+        except Exception as e:
+            print(f"[ERROR] get_all_items_by_name 실패: {e}")
+            return []
+
     def save_location(self, item_name: str, location: str, overwrite: bool = True) -> None:
         try:
             session_id = "default_session"
             user_name = self.user_names.get(session_id)
             if not user_name:
                 return
-            self.excel_manager.save_entity_data(user_name, "물건", {"물건이름": item_name, "위치": location})
+            self.excel_manager.save_entity_data(
+                user_name, "물건",
+                {"물건이름": item_name, "위치": location, "출처": "사용자 발화"}
+            )
 
             if not hasattr(self, 'excel_cache'):
                 self.excel_cache = {}
@@ -587,7 +656,12 @@ class LifeAssistMemory:
             entity_type = pending_data.get("entity_type")
             new_data = pending_data.get("new_data", {})
             session_id = pending_data.get("session_id")
-            
+            if not entity_type or (isinstance(entity_type, str) and entity_type.strip() in ("", "None")):
+                return {
+                    "success": True,
+                    "duplicate": False,
+                    "message": "네, 알겠어요."
+                }
             try:
                 user_name = self.user_names.get(session_id or "default")
                 if user_name and user_name != "사용자":
@@ -1262,9 +1336,11 @@ class LifeAssistMemory:
         for sentence in sentences:
 
             location_patterns = [
+                # 문장 맨 앞의 "내/네/이/그"만 접두사로 인식 (예: "내 열쇠는 책상에 있어"). "나이키"의 "이"가 매칭되지 않도록 ^ 사용
+                r"^(?:내|네|이|그)\s*(.+?)\s*(?:은|는)\s*(.+?)\s*(?:안에|위에|밖에|옆에|앞에|뒤에|아래에|에)\s*(?:있어|있고|있어요|있습니다|둬|놔|두|놓|보관)",
 
-                r"(?:내|네|이|그)\s*(.+?)\s*(?:은|는)\s*(.+?)\s*(?:안에|위에|밖에|옆에|앞에|뒤에|아래에|에)\s*(?:있어|있고|있어요|있습니다|둬|놔|두|놓|보관)",
-
+                # "신발은 현관 앞에 있어"처럼 장소+방향(앞에/위에 등) 전체를 잡기 위해 방향어로 끝나는 패턴을 먼저 시도
+                r"(.+?)\s*(?:은|는)\s*([가-힣A-Za-z0-9\s]+?(?:위에|앞에|뒤에|옆에|아래에|안에|밖에))\s*(?:있|둬|놔|두|놓|보관)",
                 r"(.+?)\s*(?:은|는)\s*(.+?에|위에|안에|밖에|옆에|앞에|뒤에|아래에)\s*(?:있|둬|놔|두|놓|보관)",
 
                 r"(.+?)\s*(?:에|위에|안에|밖에|옆에|앞에|뒤에|아래에)\s*(.+?)\s*(?:이|가)?\s*(?:있어|있고|있어요|있습니다)",
@@ -2765,25 +2841,55 @@ JSON 형식으로 응답:
             merged = user_info_llm_out.copy()
         
 
-        if not merged or (not structured_llm_out and not user_info_llm_out):
-            print(f"[DEBUG] LLM 결과 없음 또는 부족 → rule-based fallback 시도")
-            rule_out = self._rule_based_extract(user_input, session_id)
-            print(f"[DEBUG] _pre_extract_entities rule_out (fallback): {rule_out}")
-            
-
-            if merged:
-
-                for key, value in rule_out.items():
-                    if key not in merged:
-                        merged[key] = value
-                    else:
-
-                        existing = merged[key]
-                        new_items = [item for item in value if item not in existing]
-                        if new_items:
-                            merged[key].extend(new_items)
-            else:
-                merged = rule_out.copy()
+        # ✅ rule-based 추출 항상 수행 (LLM 결과와 병합)
+        print(f"[DEBUG] rule-based 추출 시도: '{user_input}'")
+        rule_out = self._rule_based_extract(user_input, session_id)
+        print(f"[DEBUG] _pre_extract_entities rule_out: {rule_out}")
+        
+        # rule-based 결과와 LLM 결과 병합 (더 구체적인 이름 우선)
+        if rule_out:
+            for key, rule_items in rule_out.items():
+                if key not in merged:
+                    merged[key] = rule_items.copy()
+                else:
+                    # LLM 결과와 rule-based 결과 병합
+                    llm_items = merged[key]
+                    for rule_item in rule_items:
+                        if not isinstance(rule_item, dict):
+                            continue
+                        rule_name = rule_item.get("이름", "").strip()
+                        
+                        # LLM 결과에서 같은 물건 찾기
+                        found = False
+                        for i, llm_item in enumerate(llm_items):
+                            if not isinstance(llm_item, dict):
+                                continue
+                            llm_name = llm_item.get("이름", "").strip()
+                            
+                            # 같은 물건이면 더 구체적인 이름(더 긴 이름)을 우선
+                            if rule_name and llm_name:
+                                # 부분 일치 확인 (예: "컵"과 "빨간 컵")
+                                if rule_name in llm_name or llm_name in rule_name:
+                                    if len(rule_name) > len(llm_name):
+                                        # rule-based가 더 구체적이면 교체
+                                        merged[key][i] = rule_item
+                                        print(f"[DEBUG] rule-based 결과가 더 구체적: '{rule_name}' > '{llm_name}'")
+                                    found = True
+                                    break
+                                elif rule_name == llm_name:
+                                    # 정확히 일치하면 rule-based 우선 (위치 정보가 더 정확할 수 있음)
+                                    merged[key][i] = rule_item
+                                    found = True
+                                    break
+                        
+                        if not found:
+                            # 새로운 물건이면 추가
+                            merged[key].append(rule_item)
+                            print(f"[DEBUG] rule-based 결과 추가: {rule_item}")
+        
+        if not merged:
+            # LLM과 rule-based 모두 실패한 경우
+            merged = rule_out.copy() if rule_out else {}
         
 
         for entity_key, entity_list in merged.items():

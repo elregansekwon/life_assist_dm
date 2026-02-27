@@ -10,7 +10,7 @@
             "cwd": "${workspaceFolder}",
             "python": "/usr/bin/python3",
             "env": {
-                "PYTHONPATH": "${workspaceFolder}"
+                "PYTHONPATH": "${workspaceFolder}/life_assist_dm"
             }
         }
     ]

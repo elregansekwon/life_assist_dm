@@ -786,7 +786,7 @@ def handle_pending_answer(user_input: str, memory_instance, session_id: str) -> 
                 memory_instance.pending_question.pop(session_id, None)
                 return {"success": True, "message": f"{item}을(를) {loc}에 정리해둘게요.", "robot_command": cmd}
             memory_instance.pending_question.pop(session_id, None)
-            return {"success": True, "message": f"'{item}'의 위치를 '{loc}'(으)로 저장했어요.", "robot_command": None}
+            return {"success": True, "message": f"{item}의 위치를 {loc}로 저장했어요.", "robot_command": None}
         elif question_type == "location_confirmed":
             # 위치 확인 후 작업 실행 여부 결정
             res = _handle_task_execution_response(user_input, question_data, memory_instance, session_id)
@@ -1439,7 +1439,7 @@ def handle_cognitive_task_with_lcel(user_input: str, memory_instance, session_id
                                 memory_instance.pending_question[session_id] = save_result.get("pending_data", {})
                                 return save_result["message"]
                             else:
-                                results.append(f"'{name}'의 위치를 '{location}'로 저장했어요.")
+                                results.append(f"{name}의 위치를 {location}로 저장했어요.")
                     elif entity_key == "user.건강상태":
                         # 감정 엔티티도 JSON 구조로 저장 (정서 타입으로 통일)
                         emotion = entity.get("증상", "")
